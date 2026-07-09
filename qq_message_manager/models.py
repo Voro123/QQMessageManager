@@ -34,3 +34,4 @@ class ChatSession:
     last_message: str = ""
     last_time: datetime = field(default_factory=datetime.now)
     unread_count: int = 0
+    pinned: bool = False
