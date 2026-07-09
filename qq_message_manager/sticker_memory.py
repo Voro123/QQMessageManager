@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
@@ -47,13 +48,16 @@ class StickerRecord:
 
     def to_cq_code(self) -> str:
         if self.source_type == "mface" and self.emoji_id and self.emoji_package_id and self.key:
-            return _cq("mface", {
-                "emoji_id": self.emoji_id,
-                "emoji_package_id": self.emoji_package_id,
-                "key": self.key,
-                "summary": self.summary,
-            })
-        image_file = self.path or self.url or self.file or self.file_id
+            return _cq(
+                "mface",
+                {
+                    "emoji_id": self.emoji_id,
+                    "emoji_package_id": self.emoji_package_id,
+                    "key": self.key,
+                    "summary": self.summary,
+                },
+            )
+        image_file = self.path or self.url or self.file_id or (self.file if self.file != "marketface" else "")
         if not image_file:
             return ""
         return _cq("image", {"file": image_file, "summary": self.summary})
@@ -234,12 +238,11 @@ def _record_from_data(data: dict[str, Any], segment_type: str) -> StickerRecord 
 
 
 def _stable_id(*parts: str) -> str:
-    for value in parts:
-        if value:
-            cleaned = re.sub(r"[^A-Za-z0-9_\-]", "", value)[:24]
-            if cleaned:
-                return f"mf_{cleaned}"
-    return ""
+    raw = "|".join(value for value in parts if value)
+    if not raw:
+        return ""
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+    return f"mf_{digest}"
 
 
 def _usage_hint(summary: str) -> str:
