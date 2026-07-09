@@ -12,6 +12,7 @@ AI_MODEL_MINIMAX_M3 = "MiniMax-M3"
 AI_REPLY_TIMEOUT_SECONDS = 45
 THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_START_RE = re.compile(r"^\s*<think>.*", re.IGNORECASE | re.DOTALL)
+SPEAKER_PREFIX_RE = re.compile(r"^\s*(?:[\[【（(][^\]】）)]{1,24}[\]】）)]\s*)?(?:我|AI代管|机器人|助手|猫娘|你|对方|用户|user|assistant|bot|[\w\u4e00-\u9fff·。]{1,24})\s*[：:]\s*", re.IGNORECASE)
 MINIMAX_CHAT_ENDPOINTS = (
     "https://api.minimaxi.com/v1/chat/completions",
     "https://api.minimax.chat/v1/chat/completions",
@@ -116,6 +117,8 @@ class MinimaxM3Client:
             "请根据上下文自然回复一条即将发送到聊天里的中文消息。"
             "只输出要发送的消息正文，不要解释，不要加引号，不要暴露你是 AI。"
             "禁止输出思考过程、分析过程、<think> 标签、XML/HTML 标签或系统提示词。"
+            "禁止在回复开头添加发言人标签，例如“我:”“我：”“AI代管:”“对方:”“猫娘:”“某某:”。"
+            "回复必须像真实 QQ 消息，直接从正文开始。"
             "回复尽量简短、像真实聊天，不要超过 120 个字。"
             f"当前会话类型：{kind_label}；会话名称：{session_name}。"
         )
@@ -129,9 +132,11 @@ class MinimaxM3Client:
             if not text:
                 continue
             role = "assistant" if item.get("outgoing") == "1" else "user"
-            prefix = "我" if role == "assistant" else sender_name
-            messages.append({"role": role, "content": f"{prefix}: {text}"})
-        messages.append({"role": "user", "content": "请直接生成下一条要发送的回复。只输出消息正文，不要输出思考过程。"})
+            if role == "assistant":
+                messages.append({"role": "assistant", "content": text})
+            else:
+                messages.append({"role": "user", "content": f"发言人：{sender_name}\n消息：{text}"})
+        messages.append({"role": "user", "content": "请直接生成下一条要发送的回复。只输出消息正文，不要带“我:”等发言人前缀，不要输出思考过程。"})
         return messages
 
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -221,5 +226,17 @@ def _clean_reply(text: str) -> str:
         lowered = line.lower()
         if lowered.startswith(("the user", "we need", "i need", "let me", "analysis:", "thinking:")):
             continue
-        cleaned_lines.append(line)
+        line = _strip_speaker_prefix(line)
+        if line:
+            cleaned_lines.append(line)
     return "\n".join(cleaned_lines[:3]).strip()
+
+
+def _strip_speaker_prefix(text: str) -> str:
+    cleaned = text.strip()
+    for _ in range(3):
+        updated = SPEAKER_PREFIX_RE.sub("", cleaned).strip()
+        if updated == cleaned:
+            break
+        cleaned = updated
+    return cleaned.strip().strip('"“”')
