@@ -160,6 +160,7 @@ class MainWindow(QMainWindow):
         self.sessions: dict[str, ChatSession] = {}
         self.messages: dict[str, list[ChatMessage]] = defaultdict(list)
         self.session_items: dict[str, QListWidgetItem] = {}
+        self.seen_message_keys: set[str] = set()
         self.current_session_id: str | None = None
 
         self.setWindowTitle("QQMessageManager")
@@ -245,6 +246,7 @@ class MainWindow(QMainWindow):
         self.client_thread.connected.connect(lambda: self._set_status("已连接"))
         self.client_thread.disconnected.connect(self._handle_disconnected)
         self.client_thread.message_received.connect(self.add_message)
+        self.client_thread.history_messages_received.connect(self.add_history_messages)
         self.client_thread.session_name_updated.connect(self.update_session_name)
         self.client_thread.log.connect(self.append_log)
         self.client_thread.start()
@@ -259,13 +261,32 @@ class MainWindow(QMainWindow):
         self.disconnect_from_server()
         event.accept()
 
+    def add_history_messages(self, messages: Any) -> None:
+        if not isinstance(messages, list):
+            return
+        for message in messages:
+            if isinstance(message, ChatMessage):
+                message.historical = True
+                self.add_message(message)
+
     def add_message(self, message: Any) -> None:
         if not isinstance(message, ChatMessage):
             return
 
+        message_key = self._message_key(message)
+        if message_key in self.seen_message_keys:
+            return
+        self.seen_message_keys.add(message_key)
+
         session = self.sessions.get(message.session_id)
         if session is None:
-            session = ChatSession(message.session_id, message.session_name, message.session_kind)
+            session = ChatSession(
+                message.session_id,
+                message.session_name,
+                message.session_kind,
+                last_message=message.text,
+                last_time=message.timestamp,
+            )
             self.sessions[message.session_id] = session
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, message.session_id)
@@ -277,9 +298,11 @@ class MainWindow(QMainWindow):
                 session.name = message.session_name
 
         self.messages[message.session_id].append(message)
-        session.last_message = message.text
-        session.last_time = message.timestamp
-        if self.current_session_id != message.session_id:
+        self.messages[message.session_id].sort(key=lambda stored_message: stored_message.timestamp)
+        if not session.last_message or message.timestamp >= session.last_time:
+            session.last_message = message.text
+            session.last_time = message.timestamp
+        if not message.historical and not message.outgoing and self.current_session_id != message.session_id:
             session.unread_count += 1
         self._refresh_session_item(item, session)
         self._sort_sessions()
@@ -411,6 +434,20 @@ class MainWindow(QMainWindow):
 
     def _set_status(self, text: str) -> None:
         self.statusBar().showMessage(f"{text} · {self.websocket_url}")
+
+    @staticmethod
+    def _message_key(message: ChatMessage) -> str:
+        if message.message_id:
+            return f"{message.session_id}:id:{message.message_id}"
+        return ":".join(
+            [
+                message.session_id,
+                message.sender_id,
+                str(int(message.timestamp.timestamp())),
+                message.text,
+                "out" if message.outgoing else "in",
+            ]
+        )
 
 
 def _kind_label(kind: str) -> str:
