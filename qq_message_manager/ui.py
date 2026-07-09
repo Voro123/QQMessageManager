@@ -205,6 +205,9 @@ class AiSettingsDialog(QDialog):
         self.prevent_self_follow = QCheckBox("如果上一条发言人是自己，不发送信息")
         self.prevent_self_follow.setChecked(config.prevent_self_follow_enabled)
 
+        self.allow_ai_skip = QCheckBox("允许 AI 自主判断本次不发送信息")
+        self.allow_ai_skip.setChecked(config.allow_ai_skip_enabled)
+
         form = QFormLayout()
         form.addRow("AI 服务商", self.provider_input)
         form.addRow("API Key", self.api_key_input)
@@ -217,6 +220,7 @@ class AiSettingsDialog(QDialog):
         form.addRow("规则 5", self.mention_enabled)
         form.addRow("被艾特回复延迟", _range_widget(self.mention_min, self.mention_max, "秒"))
         form.addRow("规则 6", self.prevent_self_follow)
+        form.addRow("自主判断", self.allow_ai_skip)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -241,6 +245,7 @@ class AiSettingsDialog(QDialog):
             mention_min_seconds=self.mention_min.value(),
             mention_max_seconds=self.mention_max.value(),
             prevent_self_follow_enabled=self.prevent_self_follow.isChecked(),
+            allow_ai_skip_enabled=self.allow_ai_skip.isChecked(),
         ).normalized()
 
     def accept(self) -> None:  # noqa: D102
@@ -645,7 +650,11 @@ class MainWindow(QMainWindow):
     def _handle_ai_reply_ready(self, session_id: str, reply: str) -> None:
         self.ai_inflight_sessions.discard(session_id)
         reply = reply.strip()
-        if not reply or session_id not in self.ai_managed_sessions:
+        if not reply:
+            if load_ai_config(self.settings).allow_ai_skip_enabled:
+                self.append_log("AI 代管判断本次不需要回复")
+            return
+        if session_id not in self.ai_managed_sessions:
             return
         config = load_ai_config(self.settings).normalized()
         if config.prevent_self_follow_enabled and self._last_speaker_is_self(session_id):
@@ -824,6 +833,7 @@ def load_ai_config(settings: QSettings) -> AiReplyConfig:
         mention_min_seconds=_setting_int(settings, "ai/mention_min_seconds", 3),
         mention_max_seconds=_setting_int(settings, "ai/mention_max_seconds", 6),
         prevent_self_follow_enabled=_setting_bool(settings, "ai/prevent_self_follow_enabled", True),
+        allow_ai_skip_enabled=_setting_bool(settings, "ai/allow_ai_skip_enabled", False),
     ).normalized()
 
 
@@ -842,6 +852,7 @@ def save_ai_config(settings: QSettings, config: AiReplyConfig) -> None:
     settings.setValue("ai/mention_min_seconds", normalized.mention_min_seconds)
     settings.setValue("ai/mention_max_seconds", normalized.mention_max_seconds)
     settings.setValue("ai/prevent_self_follow_enabled", normalized.prevent_self_follow_enabled)
+    settings.setValue("ai/allow_ai_skip_enabled", normalized.allow_ai_skip_enabled)
     settings.sync()
 
 
