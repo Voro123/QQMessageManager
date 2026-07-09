@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import threading
 from collections import defaultdict
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -48,6 +50,9 @@ from .ai_client import (
 from .image_cache import ensure_cached, short_id, supported_format, to_data_uri
 from .models import ChatMessage, ChatSession
 from .napcat_client import NapCatClientThread
+from .styles import get_stylesheet
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = "3002"
@@ -84,6 +89,7 @@ class LoginWindow(QWidget):
         self.use_full_url.toggled.connect(self._sync_form_state)
 
         connect_button = QPushButton("连接")
+        connect_button.setObjectName("primaryButton")
         connect_button.clicked.connect(self._emit_login)
 
         title = QLabel("QQMessageManager")
@@ -109,15 +115,6 @@ class LoginWindow(QWidget):
         layout.addLayout(form)
         layout.addWidget(connect_button, alignment=Qt.AlignmentFlag.AlignRight)
 
-        self.setStyleSheet(
-            """
-            QWidget { font-size: 14px; }
-            #subtitle { color: #666; }
-            QLineEdit { padding: 8px; border: 1px solid #d5d5d5; border-radius: 6px; }
-            QPushButton { padding: 8px 22px; border-radius: 6px; background: #12b7f5; color: white; }
-            QPushButton:hover { background: #0aa4df; }
-            """
-        )
         self._sync_form_state()
 
     def _sync_form_state(self) -> None:
@@ -438,20 +435,8 @@ class MainWindow(QMainWindow):
         self._set_status("准备连接")
         self._sync_ai_control_state()
 
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #f5f7fa; }
-            QWidget { font-size: 14px; }
-            #leftTitle, #chatHeader { font-size: 18px; font-weight: 600; padding: 8px; }
-            QListWidget, QTextBrowser { background: white; border: 1px solid #e6e8eb; border-radius: 8px; }
-            QListWidget::item { padding: 10px; border-bottom: 1px solid #f0f0f0; }
-            QListWidget::item:selected { background: #dff4ff; color: #111; }
-            #emptyLabel { color: #999; background: white; border: 1px dashed #ddd; border-radius: 8px; }
-            QLineEdit { padding: 8px; border: 1px solid #d5d5d5; border-radius: 6px; background: white; }
-            QPushButton { padding: 8px 18px; border-radius: 6px; background: #eeeeee; }
-            QPushButton:hover { background: #e0e0e0; }
-            """
-        )
+        # 应用现代化样式表
+        self.setStyleSheet(get_stylesheet())
 
     def start(self) -> None:
         self.client_thread = NapCatClientThread(self.websocket_url, self.token)
@@ -891,7 +876,10 @@ class MainWindow(QMainWindow):
         time_text = message.timestamp.strftime("%H:%M:%S")
         sender = escape(message.sender_name)
         align = "right" if message.outgoing else "left"
-        bubble_background = "#d9fdd3" if message.outgoing else "#eef9ff"
+        # 使用更现代化的气泡颜色
+        bubble_background = "#dcf8c6" if message.outgoing else "#ffffff"
+        bubble_border = "#c8e6a2" if message.outgoing else "#e5e5e5"
+        text_color = "#000000"
 
         allow_images = load_ai_config(self.settings).allow_image_read_enabled
         image_html = ""
@@ -900,16 +888,18 @@ class MainWindow(QMainWindow):
             for img in message.images[:3]:
                 if img.local_path:
                     src = Path(img.local_path).as_uri()
+                    # 增大图片缩略图尺寸，使用现代化圆角
                     parts.append(
                         f"<img src='{src}' "
-                        f"style='max-width:240px;max-height:240px;border-radius:6px;margin-top:4px;display:block;'>"
+                        f"style='max-width:280px;max-height:280px;border-radius:10px;"
+                        f"margin-top:6px;display:block;box-shadow: 0 1px 2px rgba(0,0,0,0.1);'>"
                     )
                 elif img.load_failed:
-                    parts.append("<span style='color:#c0392b;'>[图片加载失败]</span>")
+                    parts.append("<span style='color:#c0392b;font-size:12px;'>[图片加载失败]</span>")
                 else:
-                    parts.append("<span style='color:#aaa;'>[图片加载中]</span>")
+                    parts.append("<span style='color:#aaa;font-size:12px;'>[图片加载中]</span>")
             if parts:
-                image_html = "<div style='margin-top:4px;'>" + "".join(parts) + "</div>"
+                image_html = "<div style='margin-top:6px;'>" + "".join(parts) + "</div>"
 
         text = message.text.strip()
         show_text = text and text != "[图片消息已过滤]"
@@ -918,15 +908,18 @@ class MainWindow(QMainWindow):
         elif show_text:
             body = escape(text).replace("\n", "<br>")
         elif message.images:
-            body = "<span style='color:#aaa;'>[图片消息已过滤]</span>"
+            body = "<span style='color:#aaa;font-size:12px;'>[图片消息已过滤]</span>"
         else:
-            body = "<span style='color:#aaa;'>[空消息]</span>"
+            body = "<span style='color:#aaa;font-size:12px;'>[空消息]</span>"
 
+        # 使用更现代化的气泡样式：更大圆角、阴影、改进布局
         return (
-            f"<div style='margin: 12px 0; text-align:{align};'>"
-            f"<div style='color:#888;font-size:12px;'>{time_text} · {sender}</div>"
-            "<div style='display:inline-block;margin-top:4px;padding:8px 10px;"
-            f"background:{bubble_background};border-radius:8px;line-height:1.45;text-align:left;'>"
+            f"<div style='margin: 16px 12px; text-align:{align};'>"
+            f"<div style='color:#8e8e8e;font-size:11px;margin-bottom:4px;'>{time_text} · {sender}</div>"
+            "<div style='display:inline-block;margin-top:2px;padding:10px 14px;"
+            f"background:{bubble_background};border:1px solid {bubble_border};"
+            f"border-radius:12px;line-height:1.5;text-align:left;max-width:70%;"
+            f"color:{text_color};box-shadow: 0 1px 2px rgba(0,0,0,0.08);'>"
             f"{body}</div></div>"
         )
 
