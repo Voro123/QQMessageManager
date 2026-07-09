@@ -6,7 +6,7 @@ from html import escape
 from typing import Any
 from urllib.parse import urlparse
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,6 +34,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = "3001"
 DEFAULT_PATH = ""
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}{DEFAULT_PATH}"
+SETTINGS_ORGANIZATION = "QQMessageManager"
+SETTINGS_APPLICATION = "QQMessageManager"
 
 
 class LoginWindow(QWidget):
@@ -41,20 +43,21 @@ class LoginWindow(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         self.setWindowTitle("QQMessageManager - 连接 NapCatQQ")
         self.setMinimumWidth(560)
 
-        self.url_input = QLineEdit(DEFAULT_URL)
-        self.host_input = QLineEdit(DEFAULT_HOST)
-        self.port_input = QLineEdit(DEFAULT_PORT)
-        self.path_input = QLineEdit(DEFAULT_PATH)
+        self.url_input = QLineEdit(self._setting_text("login/url", DEFAULT_URL))
+        self.host_input = QLineEdit(self._setting_text("login/host", DEFAULT_HOST))
+        self.port_input = QLineEdit(self._setting_text("login/port", DEFAULT_PORT))
+        self.path_input = QLineEdit(self._setting_text("login/path", DEFAULT_PATH))
         self.path_input.setPlaceholderText("正向 WS 通常留空；有自定义路径时再填写")
-        self.token_input = QLineEdit()
+        self.token_input = QLineEdit(self._setting_text("login/token", ""))
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.token_input.setPlaceholderText("没有配置 Token 可留空")
+        self.token_input.setPlaceholderText("没有配置 Token 可留空；连接后会记住上次输入")
 
         self.use_full_url = QCheckBox("优先使用完整 WebSocket 地址")
-        self.use_full_url.setChecked(True)
+        self.use_full_url.setChecked(self._setting_bool("login/use_full_url", True))
         self.use_full_url.toggled.connect(self._sync_form_state)
 
         connect_button = QPushButton("连接")
@@ -106,6 +109,7 @@ class LoginWindow(QWidget):
         if not websocket_url:
             QMessageBox.warning(self, "连接信息不完整", "请输入有效的 WebSocket 地址。")
             return
+        self._save_login_settings(websocket_url)
         self.login_requested.emit(websocket_url, self.token_input.text().strip())
 
     def _build_url(self) -> str:
@@ -122,6 +126,29 @@ class LoginWindow(QWidget):
         if path and not path.startswith("/"):
             path = f"/{path}"
         return f"ws://{host}:{port}{path}"
+
+    def _save_login_settings(self, websocket_url: str) -> None:
+        self.settings.setValue("login/url", websocket_url)
+        self.settings.setValue("login/host", self.host_input.text().strip() or DEFAULT_HOST)
+        self.settings.setValue("login/port", self.port_input.text().strip() or DEFAULT_PORT)
+        self.settings.setValue("login/path", self.path_input.text().strip())
+        self.settings.setValue("login/token", self.token_input.text().strip())
+        self.settings.setValue("login/use_full_url", self.use_full_url.isChecked())
+        self.settings.sync()
+
+    def _setting_text(self, key: str, default: str) -> str:
+        value = self.settings.value(key, default)
+        if value is None:
+            return default
+        return str(value)
+
+    def _setting_bool(self, key: str, default: bool) -> bool:
+        value = self.settings.value(key, default)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class MainWindow(QMainWindow):
