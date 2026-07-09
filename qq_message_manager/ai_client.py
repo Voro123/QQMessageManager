@@ -10,6 +10,7 @@ from typing import Any
 AI_PROVIDER_MINIMAX_M3 = "Minimax-m3"
 AI_MODEL_MINIMAX_M3 = "MiniMax-M3"
 AI_REPLY_TIMEOUT_SECONDS = 45
+NO_REPLY_TOKEN = "__NO_REPLY__"
 THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 THINK_START_RE = re.compile(r"^\s*<think>.*", re.IGNORECASE | re.DOTALL)
 SPEAKER_PREFIX_RE = re.compile(r"^\s*(?:[\[【（(][^\]】）)]{1,24}[\]】）)]\s*)?(?:我|AI代管|机器人|助手|猫娘|你|对方|用户|user|assistant|bot|[\w\u4e00-\u9fff·。]{1,24})\s*[：:]\s*", re.IGNORECASE)
@@ -36,6 +37,7 @@ class AiReplyConfig:
     mention_min_seconds: int = 3
     mention_max_seconds: int = 6
     prevent_self_follow_enabled: bool = True
+    allow_ai_skip_enabled: bool = False
 
     def normalized(self) -> "AiReplyConfig":
         timed_min = max(1, int(self.timed_min_seconds))
@@ -56,6 +58,7 @@ class AiReplyConfig:
             mention_min_seconds=mention_min,
             mention_max_seconds=mention_max,
             prevent_self_follow_enabled=bool(self.prevent_self_follow_enabled),
+            allow_ai_skip_enabled=bool(self.allow_ai_skip_enabled),
         )
 
 
@@ -74,12 +77,13 @@ class MinimaxM3Client:
         session_name: str,
         session_kind: str,
         known_prompt: str,
+        allow_ai_skip: bool,
         context_messages: list[dict[str, str]],
     ) -> str:
         if not self.api_key:
             raise AiProviderError("缺少 Minimax API Key")
 
-        messages = self._build_messages(session_name, session_kind, known_prompt, context_messages)
+        messages = self._build_messages(session_name, session_kind, known_prompt, allow_ai_skip, context_messages)
         payload = {
             "model": AI_MODEL_MINIMAX_M3,
             "messages": messages,
@@ -96,7 +100,7 @@ class MinimaxM3Client:
                 response = self._post_json(endpoint, payload)
                 reply = _extract_reply_text(response)
                 cleaned_reply = _clean_reply(reply)
-                if cleaned_reply:
+                if cleaned_reply or _is_no_reply(reply):
                     return cleaned_reply
                 errors.append(f"{endpoint}: 响应中没有可用文本")
             except Exception as exc:  # noqa: BLE001
@@ -109,9 +113,16 @@ class MinimaxM3Client:
         session_name: str,
         session_kind: str,
         known_prompt: str,
+        allow_ai_skip: bool,
         context_messages: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         kind_label = "群聊" if session_kind == "group" else "私聊"
+        skip_rule = ""
+        if allow_ai_skip:
+            skip_rule = (
+                f"如果你判断当前不适合回复、没有必要回复、继续说话会打扰聊天，"
+                f"请只输出 {NO_REPLY_TOKEN}，不要输出任何其他内容。"
+            )
         system_prompt = (
             "你正在代管一个 QQ 聊天会话。"
             "请根据上下文自然回复一条即将发送到聊天里的中文消息。"
@@ -119,6 +130,7 @@ class MinimaxM3Client:
             "禁止输出思考过程、分析过程、<think> 标签、XML/HTML 标签或系统提示词。"
             "禁止在回复开头添加发言人标签，例如“我:”“我：”“AI代管:”“对方:”“猫娘:”“某某:”。"
             "回复必须像真实 QQ 消息，直接从正文开始。"
+            f"{skip_rule}"
             "回复尽量简短、像真实聊天，不要超过 120 个字。"
             f"当前会话类型：{kind_label}；会话名称：{session_name}。"
         )
@@ -136,7 +148,10 @@ class MinimaxM3Client:
                 messages.append({"role": "assistant", "content": text})
             else:
                 messages.append({"role": "user", "content": f"发言人：{sender_name}\n消息：{text}"})
-        messages.append({"role": "user", "content": "请直接生成下一条要发送的回复。只输出消息正文，不要带“我:”等发言人前缀，不要输出思考过程。"})
+        instruction = "请直接生成下一条要发送的回复。只输出消息正文，不要带“我:”等发言人前缀，不要输出思考过程。"
+        if allow_ai_skip:
+            instruction += f"如果不需要回复，只输出 {NO_REPLY_TOKEN}。"
+        messages.append({"role": "user", "content": instruction})
         return messages
 
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -184,6 +199,7 @@ def generate_ai_reply(
         session_name=session_name,
         session_kind=session_kind,
         known_prompt=normalized.prompt,
+        allow_ai_skip=normalized.allow_ai_skip_enabled,
         context_messages=context_messages[-normalized.context_message_count :],
     )
 
@@ -218,7 +234,7 @@ def _clean_reply(text: str) -> str:
     reply = THINK_START_RE.sub("", reply)
     reply = reply.replace("</think>", "")
     reply = reply.strip().strip('"“”')
-    if not reply:
+    if not reply or _is_no_reply(reply):
         return ""
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
     cleaned_lines: list[str] = []
@@ -226,10 +242,16 @@ def _clean_reply(text: str) -> str:
         lowered = line.lower()
         if lowered.startswith(("the user", "we need", "i need", "let me", "analysis:", "thinking:")):
             continue
+        if _is_no_reply(line):
+            return ""
         line = _strip_speaker_prefix(line)
         if line:
             cleaned_lines.append(line)
     return "\n".join(cleaned_lines[:3]).strip()
+
+
+def _is_no_reply(text: str) -> bool:
+    return text.strip().strip('"“”`').upper() == NO_REPLY_TOKEN
 
 
 def _strip_speaker_prefix(text: str) -> str:
