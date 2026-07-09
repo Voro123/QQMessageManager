@@ -6,6 +6,7 @@ import threading
 from collections import defaultdict
 from datetime import datetime, timedelta
 from html import escape
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,10 +37,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ai_client import AI_PROVIDERS, AI_PROVIDER_MINIMAX_M3, AiReplyConfig, generate_ai_reply, test_ai_connection
-from .image_cache import ensure_cached, to_data_uri, supported_format, short_id
-from pathlib import Path
-from .models import ChatImage, ChatMessage, ChatSession
+from .ai_client import (
+    AI_PROVIDER_MINIMAX_M3,
+    AI_PROVIDERS,
+    AI_SKILL_CHOICES,
+    AiReplyConfig,
+    generate_ai_reply,
+    test_ai_connection,
+)
+from .image_cache import ensure_cached, short_id, supported_format, to_data_uri
+from .models import ChatMessage, ChatSession
 from .napcat_client import NapCatClientThread
 
 DEFAULT_HOST = "127.0.0.1"
@@ -183,12 +190,20 @@ class AiSettingsDialog(QDialog):
         self.provider_input.setCurrentText(config.provider)
         self.provider_input.currentTextChanged.connect(self._on_provider_changed)
 
+        self.skill_input = QComboBox()
+        for value, label in AI_SKILL_CHOICES:
+            self.skill_input.addItem(label, value)
+        skill_index = self.skill_input.findData(config.selected_skill)
+        self.skill_input.setCurrentIndex(skill_index if skill_index >= 0 else 0)
+
         self.api_key_input = QLineEdit(config.api_key)
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.api_key_input.setPlaceholderText("API Key")
 
         self.base_url_input = QLineEdit(config.base_url)
-        self.base_url_input.setPlaceholderText("OpenAI 兼容 Chat Completions 地址，例如 https://api.openai.com/v1/chat/completions（也可只填到 /v1，会自动补全 /chat/completions）")
+        self.base_url_input.setPlaceholderText(
+            "OpenAI 兼容 Chat Completions 地址，例如 https://api.openai.com/v1/chat/completions（也可只填到 /v1，会自动补全 /chat/completions）"
+        )
         self.model_input = QLineEdit(config.model)
         self.model_input.setPlaceholderText("模型名称，例如 gpt-4o-mini / deepseek-chat")
 
@@ -223,6 +238,7 @@ class AiSettingsDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("AI 服务商", self.provider_input)
+        form.addRow("Skill", self.skill_input)
         form.addRow("API Key", self.api_key_input)
 
         self.base_url_label = QLabel("API 地址")
@@ -268,6 +284,7 @@ class AiSettingsDialog(QDialog):
             prompt=self.prompt_input.toPlainText(),
             base_url=self.base_url_input.text(),
             model=self.model_input.text(),
+            selected_skill=str(self.skill_input.currentData() or ""),
             timed_enabled=self.timed_enabled.isChecked(),
             timed_min_seconds=self.timed_min.value(),
             timed_max_seconds=self.timed_max.value(),
@@ -287,7 +304,6 @@ class AiSettingsDialog(QDialog):
         super().accept()
 
     def _on_provider_changed(self, provider: str) -> None:
-        # 只有 Minimax-m3 不需要自定义 API 地址与模型；其余服务商展示这两项
         show_custom = provider != AI_PROVIDER_MINIMAX_M3
         self.base_url_label.setVisible(show_custom)
         self.base_url_input.setVisible(show_custom)
@@ -322,7 +338,7 @@ class AiSettingsDialog(QDialog):
             color = "green"
         else:
             color = "red"
-        self.test_result_label.setText(f'<font color="{color}">{msg}</font>')
+        self.test_result_label.setText(f'<font color="{color}">{escape(msg)}</font>')
 
 
 class MainWindow(QMainWindow):
@@ -587,6 +603,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.append_log("AI 代管设置已保存")
             self._clear_all_ai_timers()
+            self._render_current_session()
 
     def append_log(self, text: str) -> None:
         now = datetime.now().strftime("%H:%M:%S")
@@ -656,6 +673,10 @@ class MainWindow(QMainWindow):
             self._stop_ai_timer(session_id)
             self.append_log(f"已关闭 AI 代管：{self.sessions[session_id].name}")
         self._save_string_set(AI_MANAGED_SESSIONS_KEY, self.ai_managed_sessions)
+        item = self.session_items.get(session_id)
+        session = self.sessions.get(session_id)
+        if item is not None and session is not None:
+            self._refresh_session_item(item, session)
         self._sync_ai_control_state()
 
     def _sync_ai_control_state(self) -> None:
@@ -958,12 +979,14 @@ class MainWindow(QMainWindow):
     def _message_key(message: ChatMessage) -> str:
         if message.message_id:
             return f"{message.session_id}:id:{message.message_id}"
+        image_key = ",".join(img.file_unique or img.file_id or img.url or img.path or img.file for img in message.images)
         return ":".join(
             [
                 message.session_id,
                 message.sender_id,
                 str(int(message.timestamp.timestamp())),
                 message.text,
+                image_key,
                 "out" if message.outgoing else "in",
             ]
         )
@@ -976,6 +999,7 @@ def load_ai_config(settings: QSettings) -> AiReplyConfig:
         prompt=_setting_text(settings, "ai/prompt", ""),
         base_url=_setting_text(settings, "ai/base_url", ""),
         model=_setting_text(settings, "ai/model", ""),
+        selected_skill=_setting_text(settings, "ai/selected_skill", ""),
         timed_enabled=_setting_bool(settings, "ai/timed_enabled", False),
         timed_min_seconds=_setting_int(settings, "ai/timed_min_seconds", 10),
         timed_max_seconds=_setting_int(settings, "ai/timed_max_seconds", 20),
@@ -998,6 +1022,7 @@ def save_ai_config(settings: QSettings, config: AiReplyConfig) -> None:
     settings.setValue("ai/prompt", normalized.prompt)
     settings.setValue("ai/base_url", normalized.base_url)
     settings.setValue("ai/model", normalized.model)
+    settings.setValue("ai/selected_skill", normalized.selected_skill)
     settings.setValue("ai/timed_enabled", normalized.timed_enabled)
     settings.setValue("ai/timed_min_seconds", normalized.timed_min_seconds)
     settings.setValue("ai/timed_max_seconds", normalized.timed_max_seconds)
