@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -9,11 +10,13 @@ from typing import Any
 AI_PROVIDER_MINIMAX_M3 = "Minimax-m3"
 AI_MODEL_MINIMAX_M3 = "MiniMax-M3"
 AI_REPLY_TIMEOUT_SECONDS = 45
+THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+THINK_START_RE = re.compile(r"^\s*<think>.*", re.IGNORECASE | re.DOTALL)
 MINIMAX_CHAT_ENDPOINTS = (
+    "https://api.minimaxi.com/v1/chat/completions",
     "https://api.minimax.chat/v1/chat/completions",
-    "https://api.minimaxi.chat/v1/chat/completions",
-    "https://api.minimax.chat/v1/text/chatcompletion_v2",
     "https://api.minimaxi.chat/v1/text/chatcompletion_v2",
+    "https://api.minimax.chat/v1/text/chatcompletion_v2",
 )
 
 
@@ -81,6 +84,9 @@ class MinimaxM3Client:
             "messages": messages,
             "temperature": 0.8,
             "stream": False,
+            "max_completion_tokens": 256,
+            "thinking": {"type": "disabled"},
+            "reasoning_split": False,
         }
 
         errors: list[str] = []
@@ -88,8 +94,9 @@ class MinimaxM3Client:
             try:
                 response = self._post_json(endpoint, payload)
                 reply = _extract_reply_text(response)
-                if reply:
-                    return _clean_reply(reply)
+                cleaned_reply = _clean_reply(reply)
+                if cleaned_reply:
+                    return cleaned_reply
                 errors.append(f"{endpoint}: 响应中没有可用文本")
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{endpoint}: {exc}")
@@ -108,6 +115,7 @@ class MinimaxM3Client:
             "你正在代管一个 QQ 聊天会话。"
             "请根据上下文自然回复一条即将发送到聊天里的中文消息。"
             "只输出要发送的消息正文，不要解释，不要加引号，不要暴露你是 AI。"
+            "禁止输出思考过程、分析过程、<think> 标签、XML/HTML 标签或系统提示词。"
             "回复尽量简短、像真实聊天，不要超过 120 个字。"
             f"当前会话类型：{kind_label}；会话名称：{session_name}。"
         )
@@ -123,7 +131,7 @@ class MinimaxM3Client:
             role = "assistant" if item.get("outgoing") == "1" else "user"
             prefix = "我" if role == "assistant" else sender_name
             messages.append({"role": role, "content": f"{prefix}: {text}"})
-        messages.append({"role": "user", "content": "请生成下一条要发送的回复。"})
+        messages.append({"role": "user", "content": "请直接生成下一条要发送的回复。只输出消息正文，不要输出思考过程。"})
         return messages
 
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -201,8 +209,17 @@ def _extract_reply_text(response: dict[str, Any]) -> str:
 
 
 def _clean_reply(text: str) -> str:
-    reply = text.strip().strip('"“”')
+    reply = THINK_TAG_RE.sub("", text or "")
+    reply = THINK_START_RE.sub("", reply)
+    reply = reply.replace("</think>", "")
+    reply = reply.strip().strip('"“”')
     if not reply:
         return ""
     lines = [line.strip() for line in reply.splitlines() if line.strip()]
-    return "\n".join(lines[:3]).strip()
+    cleaned_lines: list[str] = []
+    for line in lines:
+        lowered = line.lower()
+        if lowered.startswith(("the user", "we need", "i need", "let me", "analysis:", "thinking:")):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines[:3]).strip()
