@@ -186,7 +186,7 @@ class AiSettingsDialog(QDialog):
         self.prompt_input.setPlaceholderText("提供给 AI 的已知信息/人设/规则，默认为空")
         self.prompt_input.setMinimumHeight(120)
 
-        self.timed_enabled = QCheckBox("开启定时主动发送")
+        self.timed_enabled = QCheckBox("收到非自己发言后自动发送")
         self.timed_enabled.setChecked(config.timed_enabled)
         self.timed_min = _spin(config.timed_min_seconds, 1, 3600)
         self.timed_max = _spin(config.timed_max_seconds, 1, 3600)
@@ -213,7 +213,7 @@ class AiSettingsDialog(QDialog):
         form.addRow("API Key", self.api_key_input)
         form.addRow("Prompt", self.prompt_input)
         form.addRow("规则 2", self.timed_enabled)
-        form.addRow("定时发送间隔", _range_widget(self.timed_min, self.timed_max, "秒"))
+        form.addRow("收到后发送延迟", _range_widget(self.timed_min, self.timed_max, "秒"))
         form.addRow("规则 3", self.require_recent_enabled)
         form.addRow("最近其他人发言窗口", _single_spin_widget(self.recent_seconds, "秒"))
         form.addRow("规则 4：参考消息数", self.context_count)
@@ -433,6 +433,7 @@ class MainWindow(QMainWindow):
         if not message.historical and not message.outgoing:
             self.last_non_self_message_time[message.session_id] = datetime.now()
             self._maybe_schedule_mention_reply(message)
+            self._schedule_after_non_self_message_ai_reply(message.session_id)
         self._refresh_session_item(item, session)
         self._sort_sessions()
 
@@ -491,7 +492,7 @@ class MainWindow(QMainWindow):
         dialog = AiSettingsDialog(self.settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.append_log("AI 代管设置已保存")
-            self._restart_all_ai_timers()
+            self._clear_all_ai_timers()
 
     def append_log(self, text: str) -> None:
         now = datetime.now().strftime("%H:%M:%S")
@@ -556,7 +557,6 @@ class MainWindow(QMainWindow):
         if checked:
             self.ai_managed_sessions.add(session_id)
             self.append_log(f"已开启 AI 代管：{self.sessions[session_id].name}")
-            self._schedule_timed_ai_reply(session_id)
         else:
             self.ai_managed_sessions.discard(session_id)
             self._stop_ai_timer(session_id)
@@ -571,14 +571,13 @@ class MainWindow(QMainWindow):
         self.ai_managed_checkbox.setChecked(bool(self.current_session_id in self.ai_managed_sessions if self.current_session_id else False))
         self.ai_managed_checkbox.blockSignals(False)
 
-    def _restart_all_ai_timers(self) -> None:
+    def _clear_all_ai_timers(self) -> None:
         for timer in self.ai_timers.values():
             timer.stop()
+            timer.deleteLater()
         self.ai_timers.clear()
-        for session_id in list(self.ai_managed_sessions):
-            self._schedule_timed_ai_reply(session_id)
 
-    def _schedule_timed_ai_reply(self, session_id: str) -> None:
+    def _schedule_after_non_self_message_ai_reply(self, session_id: str) -> None:
         self._stop_ai_timer(session_id)
         if session_id not in self.ai_managed_sessions or session_id not in self.sessions:
             return
@@ -588,7 +587,7 @@ class MainWindow(QMainWindow):
         delay_ms = random.randint(config.timed_min_seconds, config.timed_max_seconds) * 1000
         timer = QTimer(self)
         timer.setSingleShot(True)
-        timer.timeout.connect(lambda sid=session_id: self._handle_timed_ai_timer(sid))
+        timer.timeout.connect(lambda sid=session_id: self._handle_after_message_ai_timer(sid))
         self.ai_timers[session_id] = timer
         timer.start(delay_ms)
 
@@ -598,10 +597,9 @@ class MainWindow(QMainWindow):
             timer.stop()
             timer.deleteLater()
 
-    def _handle_timed_ai_timer(self, session_id: str) -> None:
+    def _handle_after_message_ai_timer(self, session_id: str) -> None:
         self.ai_timers.pop(session_id, None)
-        self._request_ai_reply(session_id, "定时")
-        self._schedule_timed_ai_reply(session_id)
+        self._request_ai_reply(session_id, "收到非自己发言后延迟")
 
     def _maybe_schedule_mention_reply(self, message: ChatMessage) -> None:
         session_id = message.session_id
