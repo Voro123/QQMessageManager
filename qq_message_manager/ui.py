@@ -148,6 +148,11 @@ class MainWindow(QMainWindow):
         self.empty_label = QLabel("连接成功后，收到的 QQ 私聊和群聊会显示在这里。")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty_label.setObjectName("emptyLabel")
+        self.message_input = QLineEdit()
+        self.message_input.setPlaceholderText("选择一个私聊或群聊后输入消息，按 Enter 发送")
+        self.message_input.returnPressed.connect(self.send_current_message)
+        self.send_button = QPushButton("发送")
+        self.send_button.clicked.connect(self.send_current_message)
         self.log_browser = QTextBrowser()
         self.log_browser.setMaximumHeight(120)
 
@@ -162,11 +167,18 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.session_list)
         left_layout.addWidget(disconnect_button)
 
+        send_bar = QWidget()
+        send_layout = QHBoxLayout(send_bar)
+        send_layout.setContentsMargins(0, 0, 0, 0)
+        send_layout.addWidget(self.message_input)
+        send_layout.addWidget(self.send_button)
+
         right = QWidget()
         right_layout = QVBoxLayout(right)
         right_layout.addWidget(self.header_label)
         right_layout.addWidget(self.chat_browser)
         right_layout.addWidget(self.empty_label)
+        right_layout.addWidget(send_bar)
         right_layout.addWidget(QLabel("连接日志"))
         right_layout.addWidget(self.log_browser)
         self.chat_browser.hide()
@@ -195,6 +207,7 @@ class MainWindow(QMainWindow):
             QListWidget::item { padding: 10px; border-bottom: 1px solid #f0f0f0; }
             QListWidget::item:selected { background: #dff4ff; color: #111; }
             #emptyLabel { color: #999; background: white; border: 1px dashed #ddd; border-radius: 8px; }
+            QLineEdit { padding: 8px; border: 1px solid #d5d5d5; border-radius: 6px; background: white; }
             QPushButton { padding: 8px 18px; border-radius: 6px; background: #eeeeee; }
             QPushButton:hover { background: #e0e0e0; }
             """
@@ -205,6 +218,7 @@ class MainWindow(QMainWindow):
         self.client_thread.connected.connect(lambda: self._set_status("已连接"))
         self.client_thread.disconnected.connect(self._handle_disconnected)
         self.client_thread.message_received.connect(self.add_message)
+        self.client_thread.session_name_updated.connect(self.update_session_name)
         self.client_thread.log.connect(self.append_log)
         self.client_thread.start()
 
@@ -232,6 +246,8 @@ class MainWindow(QMainWindow):
             self.session_list.addItem(item)
         else:
             item = self.session_items[message.session_id]
+            if session.name.startswith("群聊 ") and message.session_name and not message.session_name.startswith("群聊 "):
+                session.name = message.session_name
 
         self.messages[message.session_id].append(message)
         session.last_message = message.text
@@ -245,6 +261,52 @@ class MainWindow(QMainWindow):
             self._render_current_session()
         elif self.current_session_id is None:
             self.session_list.setCurrentItem(self.session_items[message.session_id])
+
+    def send_current_message(self) -> None:
+        text = self.message_input.text().strip()
+        if not text:
+            return
+        if not self.current_session_id:
+            QMessageBox.information(self, "请选择会话", "请先在左侧选择一个私聊或群聊。")
+            return
+        session = self.sessions.get(self.current_session_id)
+        if session is None:
+            QMessageBox.warning(self, "无法发送", "当前会话不存在。")
+            return
+        if session.kind not in {"group", "private"}:
+            QMessageBox.warning(self, "无法发送", "当前会话类型不支持发送消息。")
+            return
+        if self.client_thread is None:
+            QMessageBox.warning(self, "未连接", "当前未连接 NapCatQQ，无法发送消息。")
+            return
+
+        self.client_thread.send_text(self.current_session_id, text)
+        self.message_input.clear()
+        self.add_message(
+            ChatMessage(
+                session_id=session.session_id,
+                session_name=session.name,
+                session_kind=session.kind,
+                sender_id="self",
+                sender_name="我",
+                text=text,
+                outgoing=True,
+            )
+        )
+
+    def update_session_name(self, session_id: str, name: str) -> None:
+        name = name.strip()
+        if not name:
+            return
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+        session.name = name
+        item = self.session_items.get(session_id)
+        if item is not None:
+            self._refresh_session_item(item, session)
+        if self.current_session_id == session_id:
+            self._render_current_session()
 
     def append_log(self, text: str) -> None:
         now = datetime.now().strftime("%H:%M:%S")
@@ -288,11 +350,13 @@ class MainWindow(QMainWindow):
         time_text = message.timestamp.strftime("%H:%M:%S")
         sender = escape(message.sender_name)
         body = escape(message.text).replace("\n", "<br>") or "<span style='color:#aaa;'>[空消息]</span>"
+        align = "right" if message.outgoing else "left"
+        bubble_background = "#d9fdd3" if message.outgoing else "#eef9ff"
         return (
-            "<div style='margin: 12px 0;'>"
+            f"<div style='margin: 12px 0; text-align:{align};'>"
             f"<div style='color:#888;font-size:12px;'>{time_text} · {sender}</div>"
             "<div style='display:inline-block;margin-top:4px;padding:8px 10px;"
-            "background:#eef9ff;border-radius:8px;line-height:1.45;'>"
+            f"background:{bubble_background};border-radius:8px;line-height:1.45;text-align:left;'>"
             f"{body}</div></div>"
         )
 
