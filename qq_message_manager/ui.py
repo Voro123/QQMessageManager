@@ -31,8 +31,8 @@ from .models import ChatMessage, ChatSession
 from .napcat_client import NapCatClientThread
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = "6099"
-DEFAULT_PATH = "/api/Debug/ws"
+DEFAULT_PORT = "3001"
+DEFAULT_PATH = ""
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}{DEFAULT_PATH}"
 
 
@@ -48,6 +48,7 @@ class LoginWindow(QWidget):
         self.host_input = QLineEdit(DEFAULT_HOST)
         self.port_input = QLineEdit(DEFAULT_PORT)
         self.path_input = QLineEdit(DEFAULT_PATH)
+        self.path_input.setPlaceholderText("正向 WS 通常留空；有自定义路径时再填写")
         self.token_input = QLineEdit()
         self.token_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.token_input.setPlaceholderText("没有配置 Token 可留空")
@@ -64,7 +65,7 @@ class LoginWindow(QWidget):
         font.setPointSize(20)
         font.setBold(True)
         title.setFont(font)
-        subtitle = QLabel("通过 NapCatQQ WebSocket 实时接收并统一展示 QQ 私聊和群聊消息")
+        subtitle = QLabel("通过 NapCatQQ 正向 WebSocket 实时接收并统一展示 QQ 私聊和群聊消息")
         subtitle.setObjectName("subtitle")
 
         form = QFormLayout()
@@ -117,8 +118,8 @@ class LoginWindow(QWidget):
 
         host = self.host_input.text().strip() or DEFAULT_HOST
         port = self.port_input.text().strip() or DEFAULT_PORT
-        path = self.path_input.text().strip() or DEFAULT_PATH
-        if not path.startswith("/"):
+        path = self.path_input.text().strip()
+        if path and not path.startswith("/"):
             path = f"/{path}"
         return f"ws://{host}:{port}{path}"
 
