@@ -5,7 +5,12 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from . import ui as ui_module
+from .ai_typing_delay import install_ai_typing_delay
 from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
+
+
+install_ai_typing_delay(ui_module)
 
 
 def main() -> int:
