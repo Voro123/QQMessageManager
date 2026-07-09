@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -13,6 +14,7 @@ from .models import ChatMessage
 LOGGER = logging.getLogger(__name__)
 RECENT_SESSION_LIMIT = 20
 HISTORY_MESSAGE_LIMIT = 20
+IMAGE_CQ_RE = re.compile(r"\[CQ:image,[^\]]*\]")
 
 
 class NapCatWorker(QObject):
@@ -35,7 +37,9 @@ class NapCatWorker(QObject):
         self._current_websocket: Any | None = None
         self._echo_index = 0
         self._pending_group_info: set[str] = set()
+        self._pending_private_info: set[str] = set()
         self._group_names: dict[str, str] = {}
+        self._private_names: dict[str, str] = {}
         self._history_requested: set[str] = set()
 
     def run(self) -> None:
@@ -87,6 +91,7 @@ class NapCatWorker(QObject):
         websocket = await self._open_websocket(websockets, self.websocket_url, headers)
         self._current_websocket = websocket
         self._pending_group_info.clear()
+        self._pending_private_info.clear()
         self._history_requested.clear()
         try:
             async with websocket:
@@ -128,7 +133,7 @@ class NapCatWorker(QObject):
 
         message = normalize_message_event(event)
         if message is not None:
-            self._enrich_group_message(message)
+            self._enrich_message(message)
             self.message_received.emit(message)
 
     def _handle_action_response(self, event: dict[str, Any]) -> bool:
@@ -177,6 +182,24 @@ class NapCatWorker(QObject):
                 self.log.emit(f"获取群信息失败：{_action_error(event)}")
             return True
 
+        if echo_text.startswith("get_private_info:"):
+            user_id = echo_text.split(":", 2)[1]
+            self._pending_private_info.discard(user_id)
+            if ok:
+                data = event.get("data") or {}
+                private_name = _first_text(
+                    data.get("remark"),
+                    data.get("nickname"),
+                    data.get("nick"),
+                    data.get("user_name"),
+                    f"QQ {user_id}",
+                )
+                self._private_names[user_id] = private_name
+                self.session_name_updated.emit(f"private:{user_id}", private_name)
+            else:
+                self.log.emit(f"获取私聊用户信息失败：{_action_error(event)}")
+            return True
+
         if echo_text.startswith("send_msg:"):
             if ok:
                 self.log.emit("消息已发送")
@@ -207,18 +230,27 @@ class NapCatWorker(QObject):
         if kind == "group":
             action = "get_group_msg_history"
             params = {"group_id": _onebot_id(target_id), "count": HISTORY_MESSAGE_LIMIT}
+            if name and not name.startswith("群聊 "):
+                self._group_names[target_id] = name
         elif kind == "private":
             action = "get_friend_msg_history"
             params = {"user_id": _onebot_id(target_id), "count": HISTORY_MESSAGE_LIMIT}
+            if name and not name.startswith("QQ "):
+                self._private_names[target_id] = name
+            else:
+                self._request_private_info(target_id)
         else:
             return
 
         asyncio.create_task(self._send_action(action, params, self._next_echo(f"history:{session_id}")))
 
-    def _enrich_group_message(self, message: ChatMessage) -> None:
-        if message.session_kind != "group":
-            return
+    def _enrich_message(self, message: ChatMessage) -> None:
+        if message.session_kind == "group":
+            self._enrich_group_message(message)
+        elif message.session_kind == "private":
+            self._enrich_private_message(message)
 
+    def _enrich_group_message(self, message: ChatMessage) -> None:
         group_id = _session_target_id(message.session_id)
         if not group_id:
             return
@@ -237,6 +269,34 @@ class NapCatWorker(QObject):
 
         self._request_group_info(group_id)
 
+    def _enrich_private_message(self, message: ChatMessage) -> None:
+        user_id = _session_target_id(message.session_id)
+        if not user_id:
+            return
+
+        cached_name = self._private_names.get(user_id)
+        if cached_name:
+            message.session_name = cached_name
+            return
+
+        sender = message.raw_event.get("sender") or {}
+        if not isinstance(sender, dict):
+            sender = {}
+        event_name = _first_text(
+            message.raw_event.get("remark"),
+            message.raw_event.get("nickname"),
+            sender.get("remark"),
+            sender.get("nickname"),
+            sender.get("card"),
+        )
+        if event_name and event_name != user_id:
+            self._private_names[user_id] = event_name
+            message.session_name = event_name
+            self.session_name_updated.emit(message.session_id, event_name)
+            return
+
+        self._request_private_info(user_id)
+
     def _request_group_info(self, group_id: str) -> None:
         if group_id in self._pending_group_info:
             return
@@ -246,6 +306,19 @@ class NapCatWorker(QObject):
             self._send_action(
                 "get_group_info",
                 {"group_id": _onebot_id(group_id), "no_cache": False},
+                echo,
+            )
+        )
+
+    def _request_private_info(self, user_id: str) -> None:
+        if user_id in self._pending_private_info:
+            return
+        self._pending_private_info.add(user_id)
+        echo = self._next_echo(f"get_private_info:{user_id}")
+        asyncio.create_task(
+            self._send_action(
+                "get_stranger_info",
+                {"user_id": _onebot_id(user_id), "no_cache": False},
                 echo,
             )
         )
@@ -294,7 +367,7 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
 
     sender = event.get("sender") or {}
     sender_id = str(event.get("user_id") or sender.get("user_id") or "未知用户")
-    sender_name = _first_text(sender.get("card"), sender.get("nickname"), sender_id)
+    sender_name = _first_text(sender.get("card"), sender.get("remark"), sender.get("nickname"), sender_id)
     text = message_to_text(event.get("message"), event.get("raw_message"))
     timestamp = _event_time(event.get("time"))
     message_id = str(event.get("message_id") or event.get("messageId") or event.get("msg_id") or "")
@@ -324,13 +397,22 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
 
 def message_to_text(message: Any, raw_message: Any = None) -> str:
     if isinstance(message, str):
-        return message
+        filtered, removed_image = _filter_image_cq(message)
+        return filtered or ("[图片消息已过滤]" if removed_image else "")
     if isinstance(message, list):
         parts = [_segment_to_text(segment) for segment in message]
         rendered = "".join(part for part in parts if part)
-        return rendered or str(raw_message or "")
+        if rendered:
+            return rendered
+        if _contains_image_segment(message):
+            return "[图片消息已过滤]"
+        if raw_message is not None:
+            filtered, removed_image = _filter_image_cq(str(raw_message))
+            return filtered or ("[图片消息已过滤]" if removed_image else "")
+        return ""
     if raw_message is not None:
-        return str(raw_message)
+        filtered, removed_image = _filter_image_cq(str(raw_message))
+        return filtered or ("[图片消息已过滤]" if removed_image else "")
     if message is None:
         return ""
     return str(message)
@@ -338,20 +420,22 @@ def message_to_text(message: Any, raw_message: Any = None) -> str:
 
 def _segment_to_text(segment: Any) -> str:
     if isinstance(segment, str):
-        return segment
+        filtered, _ = _filter_image_cq(segment)
+        return filtered
     if not isinstance(segment, dict):
         return str(segment)
 
     segment_type = segment.get("type")
     data = segment.get("data") or {}
 
+    if segment_type == "image":
+        return ""
     if segment_type == "text":
         return str(data.get("text", ""))
     if segment_type == "at":
         return f"@{data.get('qq') or data.get('user_id') or ''}"
     labels = {
         "face": "表情",
-        "image": "图片",
         "record": "语音",
         "video": "视频",
         "reply": "回复",
@@ -361,6 +445,15 @@ def _segment_to_text(segment: Any) -> str:
     }
     label = labels.get(str(segment_type), str(segment_type or "未知消息"))
     return f"[{label}]"
+
+
+def _filter_image_cq(text: str) -> tuple[str, bool]:
+    filtered, count = IMAGE_CQ_RE.subn("", text)
+    return filtered.strip(), count > 0
+
+
+def _contains_image_segment(message: list[Any]) -> bool:
+    return any(isinstance(segment, dict) and segment.get("type") == "image" for segment in message)
 
 
 def _extract_recent_contacts(data: Any) -> list[dict[str, str]]:
@@ -477,6 +570,7 @@ def _history_item_to_message(item: dict[str, Any], session_id: str, kind: str) -
     )
     sender_name = _first_text(
         sender.get("card"),
+        sender.get("remark"),
         sender.get("nickname"),
         item.get("sendNickName"),
         item.get("senderName"),
@@ -492,6 +586,8 @@ def _history_item_to_message(item: dict[str, Any], session_id: str, kind: str) -
         item.get("group_name"),
         item.get("groupName"),
         item.get("peerName"),
+        item.get("remark") if session_kind == "private" else None,
+        item.get("nickname") if session_kind == "private" else None,
         f"群聊 {target_id}" if session_kind == "group" else f"QQ {target_id}",
     )
     return ChatMessage(
