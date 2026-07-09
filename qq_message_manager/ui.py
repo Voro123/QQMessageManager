@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from datetime import datetime
 from html import escape
@@ -7,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from PySide6.QtCore import QSettings, Qt, Signal
-from PySide6.QtGui import QCloseEvent, QFont
+from PySide6.QtGui import QCloseEvent, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -36,6 +38,9 @@ DEFAULT_PATH = ""
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}{DEFAULT_PATH}"
 SETTINGS_ORGANIZATION = "QQMessageManager"
 SETTINGS_APPLICATION = "QQMessageManager"
+PINNED_SESSIONS_KEY = "chat/pinned_sessions"
+PINNED_BACKGROUND = QColor("#fff3cd")
+NORMAL_BACKGROUND = QColor("#ffffff")
 
 
 class LoginWindow(QWidget):
@@ -154,6 +159,8 @@ class LoginWindow(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self, websocket_url: str, token: str = "") -> None:
         super().__init__()
+        self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+        self.pinned_sessions = self._load_pinned_sessions()
         self.websocket_url = websocket_url
         self.token = token
         self.client_thread: NapCatClientThread | None = None
@@ -169,6 +176,8 @@ class MainWindow(QMainWindow):
 
         self.session_list = QListWidget()
         self.session_list.currentItemChanged.connect(self._on_session_changed)
+        self.session_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.session_list.customContextMenuRequested.connect(self._show_session_menu)
 
         self.header_label = QLabel("等待消息")
         self.header_label.setObjectName("chatHeader")
@@ -286,6 +295,7 @@ class MainWindow(QMainWindow):
                 message.session_kind,
                 last_message=message.text,
                 last_time=message.timestamp,
+                pinned=message.session_id in self.pinned_sessions,
             )
             self.sessions[message.session_id] = session
             item = QListWidgetItem()
@@ -294,7 +304,7 @@ class MainWindow(QMainWindow):
             self.session_list.addItem(item)
         else:
             item = self.session_items[message.session_id]
-            if session.name.startswith("群聊 ") and message.session_name and not message.session_name.startswith("群聊 "):
+            if _should_replace_session_name(session, message.session_name):
                 session.name = message.session_name
 
         self.messages[message.session_id].append(message)
@@ -380,6 +390,38 @@ class MainWindow(QMainWindow):
             self._refresh_session_item(current, session)
         self._render_current_session()
 
+    def _show_session_menu(self, position: Any) -> None:
+        item = self.session_list.itemAt(position)
+        if item is None:
+            return
+        session_id = item.data(Qt.ItemDataRole.UserRole)
+        session = self.sessions.get(session_id)
+        if session is None:
+            return
+
+        menu = QMenu(self)
+        action_text = "取消置顶" if session.pinned else "置顶会话"
+        pin_action = menu.addAction(action_text)
+        pin_action.triggered.connect(lambda: self._toggle_pin_session(session_id))
+        menu.exec(self.session_list.mapToGlobal(position))
+
+    def _toggle_pin_session(self, session_id: str) -> None:
+        session = self.sessions.get(session_id)
+        item = self.session_items.get(session_id)
+        if session is None or item is None:
+            return
+
+        session.pinned = not session.pinned
+        if session.pinned:
+            self.pinned_sessions.add(session_id)
+        else:
+            self.pinned_sessions.discard(session_id)
+        self._save_pinned_sessions()
+        self._refresh_session_item(item, session)
+        self._sort_sessions()
+        if self.current_session_id == session_id:
+            self.session_list.setCurrentItem(item)
+
     def _render_current_session(self) -> None:
         if not self.current_session_id:
             self.header_label.setText("等待消息")
@@ -389,7 +431,8 @@ class MainWindow(QMainWindow):
             return
 
         session = self.sessions[self.current_session_id]
-        self.header_label.setText(f"{_kind_label(session.kind)} · {session.name}")
+        pin_text = "📌 " if session.pinned else ""
+        self.header_label.setText(f"{pin_text}{_kind_label(session.kind)} · {session.name}")
         self.empty_label.hide()
         self.chat_browser.show()
         self.chat_browser.setHtml("".join(self._message_html(m) for m in self.messages[self.current_session_id]))
@@ -416,11 +459,16 @@ class MainWindow(QMainWindow):
         last = session.last_message.replace("\n", " ")
         if len(last) > 32:
             last = f"{last[:32]}..."
-        item.setText(f"{_kind_icon(session.kind)} {session.name}{unread}\n{time_text}  {last}")
+        pin_prefix = "📌 " if session.pinned else ""
+        item.setText(f"{pin_prefix}{_kind_icon(session.kind)} {session.name}{unread}\n{time_text}  {last}")
         item.setToolTip(session.last_message)
+        item.setBackground(PINNED_BACKGROUND if session.pinned else NORMAL_BACKGROUND)
 
     def _sort_sessions(self) -> None:
-        ordered = sorted(self.sessions.values(), key=lambda session: session.last_time, reverse=True)
+        ordered = sorted(
+            self.sessions.values(),
+            key=lambda session: (0 if session.pinned else 1, -session.last_time.timestamp()),
+        )
         current_id = self.current_session_id
         self.session_list.blockSignals(True)
         while self.session_list.count():
@@ -435,6 +483,20 @@ class MainWindow(QMainWindow):
     def _set_status(self, text: str) -> None:
         self.statusBar().showMessage(f"{text} · {self.websocket_url}")
 
+    def _load_pinned_sessions(self) -> set[str]:
+        raw = self.settings.value(PINNED_SESSIONS_KEY, "[]")
+        try:
+            value = json.loads(str(raw))
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(value, list):
+            return set()
+        return {str(session_id) for session_id in value if str(session_id).strip()}
+
+    def _save_pinned_sessions(self) -> None:
+        self.settings.setValue(PINNED_SESSIONS_KEY, json.dumps(sorted(self.pinned_sessions), ensure_ascii=False))
+        self.settings.sync()
+
     @staticmethod
     def _message_key(message: ChatMessage) -> str:
         if message.message_id:
@@ -448,6 +510,16 @@ class MainWindow(QMainWindow):
                 "out" if message.outgoing else "in",
             ]
         )
+
+
+def _should_replace_session_name(session: ChatSession, candidate: str) -> bool:
+    if not candidate:
+        return False
+    if session.name.startswith("群聊 ") and not candidate.startswith("群聊 "):
+        return True
+    if session.name.startswith("QQ ") and not candidate.startswith("QQ "):
+        return True
+    return False
 
 
 def _kind_label(kind: str) -> str:
