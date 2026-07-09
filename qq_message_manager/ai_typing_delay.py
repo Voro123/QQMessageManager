@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Callable
+from typing import Any
 
 from PySide6.QtCore import QTimer
 
@@ -166,7 +166,9 @@ def _clear_pending_ai_send_timers(window: Any) -> None:
     pending = getattr(window, "ai_pending_send_timers", None)
     if not pending:
         return
-    for timer in pending.values():
+    inflight = getattr(window, "ai_inflight_sessions", set())
+    for session_id, timer in list(pending.items()):
         timer.stop()
         timer.deleteLater()
+        inflight.discard(session_id)
     pending.clear()
