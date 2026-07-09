@@ -50,6 +50,7 @@ from .ai_client import (
 from .image_cache import ensure_cached, short_id, supported_format, to_data_uri
 from .models import ChatMessage, ChatSession
 from .napcat_client import NapCatClientThread
+from .sticker_memory import StickerMemory, parse_sticker_marker
 from .styles import get_stylesheet
 
 LOGGER = logging.getLogger(__name__)
@@ -233,6 +234,12 @@ class AiSettingsDialog(QDialog):
         self.allow_image_read_enabled = QCheckBox("允许 AI 读取图片")
         self.allow_image_read_enabled.setChecked(config.allow_image_read_enabled)
 
+        self.remember_stickers_enabled = QCheckBox("记忆收到的表情包（最多 50 个）")
+        self.remember_stickers_enabled.setChecked(config.remember_stickers_enabled)
+
+        self.allow_sticker_send_enabled = QCheckBox("允许 AI 使用已记忆表情包")
+        self.allow_sticker_send_enabled.setChecked(config.allow_sticker_send_enabled)
+
         form = QFormLayout()
         form.addRow("AI 服务商", self.provider_input)
         form.addRow("Skill", self.skill_input)
@@ -254,6 +261,8 @@ class AiSettingsDialog(QDialog):
         form.addRow("规则 6", self.prevent_self_follow)
         form.addRow("自主判断", self.allow_ai_skip)
         form.addRow("图片读取", self.allow_image_read_enabled)
+        form.addRow("表情包记忆", self.remember_stickers_enabled)
+        form.addRow("表情包发送", self.allow_sticker_send_enabled)
 
         self.test_button = QPushButton("测试连接")
         self.test_button.clicked.connect(self._on_test_connection)
@@ -294,6 +303,8 @@ class AiSettingsDialog(QDialog):
             prevent_self_follow_enabled=self.prevent_self_follow.isChecked(),
             allow_ai_skip_enabled=self.allow_ai_skip.isChecked(),
             allow_image_read_enabled=self.allow_image_read_enabled.isChecked(),
+            remember_stickers_enabled=self.remember_stickers_enabled.isChecked(),
+            allow_sticker_send_enabled=self.allow_sticker_send_enabled.isChecked(),
         ).normalized()
 
     def accept(self) -> None:  # noqa: D102
@@ -346,6 +357,7 @@ class MainWindow(QMainWindow):
     def __init__(self, websocket_url: str, token: str = "") -> None:
         super().__init__()
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+        self.sticker_memory = StickerMemory()
         self.pinned_sessions = self._load_string_set(PINNED_SESSIONS_KEY)
         self.ai_managed_sessions = self._load_string_set(AI_MANAGED_SESSIONS_KEY)
         self.websocket_url = websocket_url
@@ -435,7 +447,6 @@ class MainWindow(QMainWindow):
         self._set_status("准备连接")
         self._sync_ai_control_state()
 
-        # 应用现代化样式表
         self.setStyleSheet(get_stylesheet())
 
     def start(self) -> None:
@@ -507,6 +518,11 @@ class MainWindow(QMainWindow):
             session.unread_count += 1
         if not message.historical and not message.outgoing:
             self.last_non_self_message_time[message.session_id] = datetime.now()
+            config = load_ai_config(self.settings).normalized()
+            if config.remember_stickers_enabled:
+                added = self.sticker_memory.remember_from_event(message.raw_event)
+                if added:
+                    self.append_log(f"已记忆 {added} 个表情包（最多 50 个，超过后自动淘汰最少使用）")
             self._maybe_schedule_mention_reply(message)
             self._schedule_after_non_self_message_ai_reply(message.session_id)
         self._refresh_session_item(item, session)
@@ -734,6 +750,7 @@ class MainWindow(QMainWindow):
             config.allow_image_read_enabled,
             self.token,
         )
+        sticker_options = self.sticker_memory.ai_options() if config.allow_sticker_send_enabled else []
         self.ai_inflight_sessions.add(session_id)
 
         def worker() -> None:
@@ -743,6 +760,7 @@ class MainWindow(QMainWindow):
                     session_name=session.name,
                     session_kind=session.kind,
                     context_messages=context,
+                    sticker_options=sticker_options,
                 )
                 self.ai_reply_ready.emit(session_id, reply)
             except Exception as exc:  # noqa: BLE001
@@ -752,32 +770,61 @@ class MainWindow(QMainWindow):
 
     def _handle_ai_reply_ready(self, session_id: str, reply: str) -> None:
         self.ai_inflight_sessions.discard(session_id)
-        reply = reply.strip()
-        if not reply:
-            if load_ai_config(self.settings).allow_ai_skip_enabled:
+        config = load_ai_config(self.settings).normalized()
+        reply_text, sticker_id = parse_sticker_marker(reply)
+        sticker_code = ""
+        if sticker_id and config.allow_sticker_send_enabled:
+            record = self.sticker_memory.get(sticker_id)
+            if record is None:
+                self.append_log(f"AI 代管跳过表情包：未找到 {sticker_id}")
+            else:
+                sticker_code = record.to_cq_code()
+                if not sticker_code:
+                    self.append_log(f"AI 代管跳过表情包：{sticker_id} 缺少可发送字段")
+        elif sticker_id:
+            self.append_log("AI 代管忽略表情包标识：表情包发送未开启")
+
+        reply_text = reply_text.strip()
+        if not reply_text and not sticker_code:
+            if config.allow_ai_skip_enabled:
                 self.append_log("AI 代管判断本次不需要回复")
             return
         if session_id not in self.ai_managed_sessions:
             return
-        config = load_ai_config(self.settings).normalized()
         if config.prevent_self_follow_enabled and self._last_speaker_is_self(session_id):
             self.append_log("AI 代管跳过发送：上一条发言人是自己")
             return
         session = self.sessions.get(session_id)
         if session is None or self.client_thread is None:
             return
-        self.client_thread.send_text(session_id, reply)
-        self.add_message(
-            ChatMessage(
-                session_id=session.session_id,
-                session_name=session.name,
-                session_kind=session.kind,
-                sender_id="self",
-                sender_name="AI代管",
-                text=reply,
-                outgoing=True,
+
+        if reply_text:
+            self.client_thread.send_text(session_id, reply_text)
+            self.add_message(
+                ChatMessage(
+                    session_id=session.session_id,
+                    session_name=session.name,
+                    session_kind=session.kind,
+                    sender_id="self",
+                    sender_name="AI代管",
+                    text=reply_text,
+                    outgoing=True,
+                )
             )
-        )
+        if sticker_code:
+            self.client_thread.send_text(session_id, sticker_code)
+            self.sticker_memory.mark_used(sticker_id)
+            self.add_message(
+                ChatMessage(
+                    session_id=session.session_id,
+                    session_name=session.name,
+                    session_kind=session.kind,
+                    sender_id="self",
+                    sender_name="AI代管",
+                    text="[表情包]",
+                    outgoing=True,
+                )
+            )
 
     def _handle_ai_reply_failed(self, session_id: str, error: str) -> None:
         self.ai_inflight_sessions.discard(session_id)
@@ -876,7 +923,6 @@ class MainWindow(QMainWindow):
         time_text = message.timestamp.strftime("%H:%M:%S")
         sender = escape(message.sender_name)
         align = "right" if message.outgoing else "left"
-        # 使用更现代化的气泡颜色
         bubble_background = "#dcf8c6" if message.outgoing else "#ffffff"
         bubble_border = "#c8e6a2" if message.outgoing else "#e5e5e5"
         text_color = "#000000"
@@ -888,7 +934,6 @@ class MainWindow(QMainWindow):
             for img in message.images[:3]:
                 if img.local_path:
                     src = Path(img.local_path).as_uri()
-                    # 增大图片缩略图尺寸，使用现代化圆角
                     parts.append(
                         f"<img src='{src}' "
                         f"style='max-width:280px;max-height:280px;border-radius:10px;"
@@ -912,7 +957,6 @@ class MainWindow(QMainWindow):
         else:
             body = "<span style='color:#aaa;font-size:12px;'>[空消息]</span>"
 
-        # 使用更现代化的气泡样式：更大圆角、阴影、改进布局
         return (
             f"<div style='margin: 16px 12px; text-align:{align};'>"
             f"<div style='color:#8e8e8e;font-size:11px;margin-bottom:4px;'>{time_text} · {sender}</div>"
@@ -1005,6 +1049,8 @@ def load_ai_config(settings: QSettings) -> AiReplyConfig:
         prevent_self_follow_enabled=_setting_bool(settings, "ai/prevent_self_follow_enabled", True),
         allow_ai_skip_enabled=_setting_bool(settings, "ai/allow_ai_skip_enabled", False),
         allow_image_read_enabled=_setting_bool(settings, "ai/allow_image_read_enabled", False),
+        remember_stickers_enabled=_setting_bool(settings, "ai/remember_stickers_enabled", False),
+        allow_sticker_send_enabled=_setting_bool(settings, "ai/allow_sticker_send_enabled", False),
     ).normalized()
 
 
@@ -1028,6 +1074,8 @@ def save_ai_config(settings: QSettings, config: AiReplyConfig) -> None:
     settings.setValue("ai/prevent_self_follow_enabled", normalized.prevent_self_follow_enabled)
     settings.setValue("ai/allow_ai_skip_enabled", normalized.allow_ai_skip_enabled)
     settings.setValue("ai/allow_image_read_enabled", normalized.allow_image_read_enabled)
+    settings.setValue("ai/remember_stickers_enabled", normalized.remember_stickers_enabled)
+    settings.setValue("ai/allow_sticker_send_enabled", normalized.allow_sticker_send_enabled)
     settings.sync()
 
 
