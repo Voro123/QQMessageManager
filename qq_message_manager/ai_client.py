@@ -69,6 +69,8 @@ class AiReplyConfig:
     prevent_self_follow_enabled: bool = True
     allow_ai_skip_enabled: bool = False
     allow_image_read_enabled: bool = False
+    remember_stickers_enabled: bool = False
+    allow_sticker_send_enabled: bool = False
 
     def normalized(self) -> "AiReplyConfig":
         timed_min = max(1, int(self.timed_min_seconds))
@@ -97,6 +99,8 @@ class AiReplyConfig:
             prevent_self_follow_enabled=bool(self.prevent_self_follow_enabled),
             allow_ai_skip_enabled=bool(self.allow_ai_skip_enabled),
             allow_image_read_enabled=bool(self.allow_image_read_enabled),
+            remember_stickers_enabled=bool(self.remember_stickers_enabled),
+            allow_sticker_send_enabled=bool(self.allow_sticker_send_enabled),
         )
 
 
@@ -112,6 +116,8 @@ def build_chat_messages(
     allow_ai_skip: bool,
     context_messages: list[dict[str, Any]],
     allow_image_read_enabled: bool = False,
+    allow_sticker_send_enabled: bool = False,
+    sticker_options: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     kind_label = "群聊" if session_kind == "group" else "私聊"
     skip_rule = ""
@@ -134,6 +140,7 @@ def build_chat_messages(
         )
 
     skill_prompt_block = _build_skill_prompt_block(selected_skill)
+    sticker_prompt_block = _build_sticker_prompt_block(allow_sticker_send_enabled, sticker_options or [])
 
     system_prompt = (
         "你正在代管一个 QQ 聊天会话。"
@@ -150,6 +157,7 @@ def build_chat_messages(
         f"当前会话类型：{kind_label}；会话名称：{session_name}。"
         f"{user_prompt_block}"
         f"{skill_prompt_block}"
+        f"{sticker_prompt_block}"
     )
 
     images_in_context = any((item.get("images") or []) for item in context_messages)
@@ -181,10 +189,29 @@ def build_chat_messages(
     instruction = "请直接生成下一条要发送的回复。只输出消息正文，不要带“我:”等发言人前缀，不要输出思考过程。"
     if selected_skill:
         instruction += "当前已选择 Skill，请按该 Skill 规定的说话格式、口癖、节奏和互动规则输出。"
+    if allow_sticker_send_enabled and sticker_options:
+        instruction += "如果判断适合追加一个表情包，可以在回复末尾另起一行输出 <STICKER:表情包ID>，只能使用给定列表里的 ID。"
     if allow_ai_skip:
         instruction += f"如果不需要回复，只输出 {NO_REPLY_TOKEN}。"
     messages.append({"role": "user", "content": instruction})
     return messages
+
+
+def _build_sticker_prompt_block(allow_sticker_send_enabled: bool, sticker_options: list[dict[str, str]]) -> str:
+    if not allow_sticker_send_enabled or not sticker_options:
+        return ""
+    compact = sticker_options[:50]
+    return (
+        "\n【可用表情包列表】\n"
+        "当前前端允许你从已记忆表情包中选择一个追加发送。"
+        "这些表情包都来自用户实际收到过的 mface/marketface 记录。"
+        "如果你判断这次适合发表情包，可在回复末尾另起一行输出 <STICKER:表情包ID>。"
+        "只能使用下面列表里的 id，不能编造 id，不能输出多个 STICKER。"
+        "STICKER 标识不是聊天正文，前端会移除它并在文字后追加发送表情包。"
+        "如果不适合发表情包，不要输出 STICKER 标识。\n"
+        f"{json.dumps(compact, ensure_ascii=False)}\n"
+        "【可用表情包列表结束】\n"
+    )
 
 
 def _build_skill_prompt_block(selected_skill: str) -> str:
@@ -240,6 +267,8 @@ class MinimaxM3Client:
         allow_ai_skip: bool,
         context_messages: list[dict[str, Any]],
         allow_image_read_enabled: bool = False,
+        allow_sticker_send_enabled: bool = False,
+        sticker_options: list[dict[str, str]] | None = None,
     ) -> str:
         if not self.api_key:
             raise AiProviderError("缺少 Minimax API Key")
@@ -257,6 +286,8 @@ class MinimaxM3Client:
             allow_ai_skip,
             context_messages,
             allow_image_read_enabled=allow_image_read_enabled,
+            allow_sticker_send_enabled=allow_sticker_send_enabled,
+            sticker_options=sticker_options,
         )
         payload = {
             "model": AI_MODEL_MINIMAX_M3,
@@ -281,26 +312,6 @@ class MinimaxM3Client:
                 errors.append(f"{endpoint}: {exc}")
 
         raise AiProviderError("MiniMax-M3 调用失败：" + "；".join(errors[-2:]))
-
-    def _build_messages(
-        self,
-        session_name: str,
-        session_kind: str,
-        known_prompt: str,
-        selected_skill: str,
-        allow_ai_skip: bool,
-        context_messages: list[dict[str, Any]],
-        allow_image_read_enabled: bool = False,
-    ) -> list[dict[str, Any]]:
-        return build_chat_messages(
-            session_name,
-            session_kind,
-            known_prompt,
-            selected_skill,
-            allow_ai_skip,
-            context_messages,
-            allow_image_read_enabled=allow_image_read_enabled,
-        )
 
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -383,6 +394,8 @@ class OpenAICompatibleClient:
         allow_ai_skip: bool,
         context_messages: list[dict[str, Any]],
         allow_image_read_enabled: bool = False,
+        allow_sticker_send_enabled: bool = False,
+        sticker_options: list[dict[str, str]] | None = None,
     ) -> str:
         if not self.api_key:
             raise AiProviderError("缺少 API Key")
@@ -399,6 +412,8 @@ class OpenAICompatibleClient:
             allow_ai_skip,
             context_messages,
             allow_image_read_enabled=allow_image_read_enabled,
+            allow_sticker_send_enabled=allow_sticker_send_enabled,
+            sticker_options=sticker_options,
         )
         payload = {
             "model": self.model,
@@ -485,9 +500,11 @@ def generate_ai_reply(
     session_name: str,
     session_kind: str,
     context_messages: list[dict[str, Any]],
+    sticker_options: list[dict[str, str]] | None = None,
 ) -> str:
     normalized = config.normalized()
     trimmed_context = context_messages[-normalized.context_message_count :]
+    active_stickers = sticker_options if normalized.allow_sticker_send_enabled else None
     if normalized.provider == AI_PROVIDER_MINIMAX_M3:
         client = MinimaxM3Client(normalized.api_key)
         return client.generate_reply(
@@ -498,6 +515,8 @@ def generate_ai_reply(
             allow_ai_skip=normalized.allow_ai_skip_enabled,
             context_messages=trimmed_context,
             allow_image_read_enabled=normalized.allow_image_read_enabled,
+            allow_sticker_send_enabled=normalized.allow_sticker_send_enabled,
+            sticker_options=active_stickers,
         )
 
     endpoint, model = _resolve_endpoint_and_model(normalized)
@@ -510,6 +529,8 @@ def generate_ai_reply(
         allow_ai_skip=normalized.allow_ai_skip_enabled,
         context_messages=trimmed_context,
         allow_image_read_enabled=normalized.allow_image_read_enabled,
+        allow_sticker_send_enabled=normalized.allow_sticker_send_enabled,
+        sticker_options=active_stickers,
     )
 
 
