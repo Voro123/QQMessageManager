@@ -9,12 +9,14 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QThread, Signal
 
-from .models import ChatMessage
+from .models import ChatImage, ChatMessage
 
 LOGGER = logging.getLogger(__name__)
 RECENT_SESSION_LIMIT = 20
 HISTORY_MESSAGE_LIMIT = 20
 IMAGE_CQ_RE = re.compile(r"\[CQ:image,[^\]]*\]")
+# 带捕获组，用于从 CQ 码字符串里取出 image 段的参数部分
+CQ_IMAGE_PARAMS_RE = re.compile(r"\[CQ:(?:image|mface),([^\]]*)\]")
 
 
 class NapCatWorker(QObject):
@@ -368,7 +370,9 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
     sender = event.get("sender") or {}
     sender_id = str(event.get("user_id") or sender.get("user_id") or "未知用户")
     sender_name = _first_text(sender.get("card"), sender.get("remark"), sender.get("nickname"), sender_id)
-    text = message_to_text(event.get("message"), event.get("raw_message"))
+    raw_message = event.get("message")
+    text = message_to_text(raw_message, event.get("raw_message"))
+    images = extract_images(raw_message)
     timestamp = _event_time(event.get("time"))
     message_id = str(event.get("message_id") or event.get("messageId") or event.get("msg_id") or "")
 
@@ -392,6 +396,7 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
         timestamp=timestamp,
         raw_event=event,
         message_id=message_id,
+        images=images,
     )
 
 
@@ -454,6 +459,67 @@ def _filter_image_cq(text: str) -> tuple[str, bool]:
 
 def _contains_image_segment(message: list[Any]) -> bool:
     return any(isinstance(segment, dict) and segment.get("type") == "image" for segment in message)
+
+
+def extract_images(message: Any) -> list[ChatImage]:
+    """从 OneBot 消息中提取图片附件（ChatImage），供 UI 缩略图与 AI 多模态识别使用。
+
+    NapCat/OneBot 的 message 字段可能是 segment 数组，也可能是 CQ 码字符串
+    （如 ``[CQ:image,file=xxx,url=yyy]``），两种格式都要兼容，否则图片会被漏掉。
+    ``mface`` 等以图片段上报的也按图片处理。"""
+    if isinstance(message, list):
+        return _extract_images_from_segments(message)
+    if isinstance(message, str):
+        return _extract_images_from_cq(message)
+    return []
+
+
+def _build_chat_image(data: dict[str, Any]) -> ChatImage | None:
+    item = ChatImage(
+        url=(data.get("url") or "").strip(),
+        path=(data.get("path") or "").strip(),
+        file=(data.get("file") or "").strip(),
+        file_id=(data.get("file_id") or "").strip(),
+        file_unique=(data.get("file_unique") or data.get("file_unique_id") or "").strip(),
+        file_size=(data.get("file_size") or "").strip(),
+        mime_type=(data.get("mime_type") or data.get("mime") or "").strip(),
+    )
+    if item.url or item.path or item.file or item.file_id:
+        return item
+    return None
+
+
+def _extract_images_from_segments(message: list[Any]) -> list[ChatImage]:
+    result: list[ChatImage] = []
+    for segment in message:
+        if not isinstance(segment, dict):
+            continue
+        if segment.get("type") not in ("image", "mface"):
+            continue
+        image = _build_chat_image(segment.get("data") or {})
+        if image is not None:
+            result.append(image)
+    return result
+
+
+def _extract_images_from_cq(message: str) -> list[ChatImage]:
+    result: list[ChatImage] = []
+    for match in CQ_IMAGE_PARAMS_RE.finditer(message):
+        params = _parse_cq_params(match.group(1))
+        image = _build_chat_image(params)
+        if image is not None:
+            result.append(image)
+    return result
+
+
+def _parse_cq_params(body: str) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for pair in body.split(","):
+        if "=" not in pair:
+            continue
+        key, _, value = pair.partition("=")
+        params[key.strip()] = value.strip()
+    return params
 
 
 def _extract_recent_contacts(data: Any) -> list[dict[str, str]]:
@@ -600,6 +666,7 @@ def _history_item_to_message(item: dict[str, Any], session_id: str, kind: str) -
         timestamp=_event_time(item.get("time") or item.get("msgTime") or item.get("timestamp")),
         raw_event=item,
         historical=True,
+        images=extract_images(item.get("message") or item.get("elements") or item.get("messageList")),
         message_id=str(item.get("message_id") or item.get("messageId") or item.get("msg_id") or item.get("msgId") or item.get("msgSeq") or item.get("seq") or ""),
     )
 

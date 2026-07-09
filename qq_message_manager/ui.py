@@ -36,12 +36,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .ai_client import AI_PROVIDER_MINIMAX_M3, AiReplyConfig, generate_ai_reply
-from .models import ChatMessage, ChatSession
+from .ai_client import AI_PROVIDERS, AI_PROVIDER_MINIMAX_M3, AiReplyConfig, generate_ai_reply, test_ai_connection
+from .image_cache import ensure_cached, to_data_uri, supported_format, short_id
+from pathlib import Path
+from .models import ChatImage, ChatMessage, ChatSession
 from .napcat_client import NapCatClientThread
 
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = "3001"
+DEFAULT_PORT = "3002"
 DEFAULT_PATH = ""
 DEFAULT_URL = f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}{DEFAULT_PATH}"
 SETTINGS_ORGANIZATION = "QQMessageManager"
@@ -166,6 +168,8 @@ class LoginWindow(QWidget):
 
 
 class AiSettingsDialog(QDialog):
+    test_result = Signal(bool, str)
+
     def __init__(self, settings: QSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.settings = settings
@@ -175,12 +179,18 @@ class AiSettingsDialog(QDialog):
         config = load_ai_config(settings)
 
         self.provider_input = QComboBox()
-        self.provider_input.addItem(AI_PROVIDER_MINIMAX_M3)
+        self.provider_input.addItems(AI_PROVIDERS)
         self.provider_input.setCurrentText(config.provider)
+        self.provider_input.currentTextChanged.connect(self._on_provider_changed)
 
         self.api_key_input = QLineEdit(config.api_key)
         self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.api_key_input.setPlaceholderText("Minimax API Key")
+        self.api_key_input.setPlaceholderText("API Key")
+
+        self.base_url_input = QLineEdit(config.base_url)
+        self.base_url_input.setPlaceholderText("OpenAI 兼容 Chat Completions 地址，例如 https://api.openai.com/v1/chat/completions（也可只填到 /v1，会自动补全 /chat/completions）")
+        self.model_input = QLineEdit(config.model)
+        self.model_input.setPlaceholderText("模型名称，例如 gpt-4o-mini / deepseek-chat")
 
         self.prompt_input = QTextEdit(config.prompt)
         self.prompt_input.setPlaceholderText("提供给 AI 的已知信息/人设/规则，默认为空")
@@ -208,9 +218,18 @@ class AiSettingsDialog(QDialog):
         self.allow_ai_skip = QCheckBox("允许 AI 自主判断本次不发送信息")
         self.allow_ai_skip.setChecked(config.allow_ai_skip_enabled)
 
+        self.allow_image_read_enabled = QCheckBox("允许 AI 读取图片")
+        self.allow_image_read_enabled.setChecked(config.allow_image_read_enabled)
+
         form = QFormLayout()
         form.addRow("AI 服务商", self.provider_input)
         form.addRow("API Key", self.api_key_input)
+
+        self.base_url_label = QLabel("API 地址")
+        form.addRow(self.base_url_label, self.base_url_input)
+        self.model_label = QLabel("模型名称")
+        form.addRow(self.model_label, self.model_input)
+
         form.addRow("Prompt", self.prompt_input)
         form.addRow("规则 2", self.timed_enabled)
         form.addRow("收到后发送延迟", _range_widget(self.timed_min, self.timed_max, "秒"))
@@ -221,6 +240,18 @@ class AiSettingsDialog(QDialog):
         form.addRow("被艾特回复延迟", _range_widget(self.mention_min, self.mention_max, "秒"))
         form.addRow("规则 6", self.prevent_self_follow)
         form.addRow("自主判断", self.allow_ai_skip)
+        form.addRow("图片读取", self.allow_image_read_enabled)
+
+        self.test_button = QPushButton("测试连接")
+        self.test_button.clicked.connect(self._on_test_connection)
+        self.test_result_label = QLabel("")
+        self.test_result_label.setWordWrap(True)
+        self.test_result_label.setTextFormat(Qt.TextFormat.RichText)
+        form.addRow(self.test_button)
+        form.addRow("测试结果", self.test_result_label)
+        self.test_result.connect(self._on_test_result)
+
+        self._on_provider_changed(self.provider_input.currentText())
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.accept)
@@ -235,6 +266,8 @@ class AiSettingsDialog(QDialog):
             provider=self.provider_input.currentText(),
             api_key=self.api_key_input.text(),
             prompt=self.prompt_input.toPlainText(),
+            base_url=self.base_url_input.text(),
+            model=self.model_input.text(),
             timed_enabled=self.timed_enabled.isChecked(),
             timed_min_seconds=self.timed_min.value(),
             timed_max_seconds=self.timed_max.value(),
@@ -246,16 +279,56 @@ class AiSettingsDialog(QDialog):
             mention_max_seconds=self.mention_max.value(),
             prevent_self_follow_enabled=self.prevent_self_follow.isChecked(),
             allow_ai_skip_enabled=self.allow_ai_skip.isChecked(),
+            allow_image_read_enabled=self.allow_image_read_enabled.isChecked(),
         ).normalized()
 
     def accept(self) -> None:  # noqa: D102
         save_ai_config(self.settings, self.config())
         super().accept()
 
+    def _on_provider_changed(self, provider: str) -> None:
+        # 只有 Minimax-m3 不需要自定义 API 地址与模型；其余服务商展示这两项
+        show_custom = provider != AI_PROVIDER_MINIMAX_M3
+        self.base_url_label.setVisible(show_custom)
+        self.base_url_input.setVisible(show_custom)
+        self.model_label.setVisible(show_custom)
+        self.model_input.setVisible(show_custom)
+
+    def _on_test_connection(self) -> None:
+        config = self.config()
+        if not config.api_key:
+            self._show_test_result(False, "请先填写 API Key")
+            return
+        self.test_button.setEnabled(False)
+        self._show_test_result(None, "正在测试连接...")
+
+        def worker() -> None:
+            try:
+                ok, msg = test_ai_connection(config)
+            except Exception as exc:  # noqa: BLE001
+                ok, msg = False, f"测试异常：{exc}"
+            self.test_result.emit(ok, msg)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_test_result(self, ok: bool, msg: str) -> None:
+        self.test_button.setEnabled(True)
+        self._show_test_result(ok, msg)
+
+    def _show_test_result(self, ok: bool | None, msg: str) -> None:
+        if ok is None:
+            color = "gray"
+        elif ok:
+            color = "green"
+        else:
+            color = "red"
+        self.test_result_label.setText(f'<font color="{color}">{msg}</font>')
+
 
 class MainWindow(QMainWindow):
     ai_reply_ready = Signal(str, str)
     ai_reply_failed = Signal(str, str)
+    image_loaded = Signal(str)
 
     def __init__(self, websocket_url: str, token: str = "") -> None:
         super().__init__()
@@ -275,6 +348,7 @@ class MainWindow(QMainWindow):
         self.ai_inflight_sessions: set[str] = set()
         self.ai_reply_ready.connect(self._handle_ai_reply_ready)
         self.ai_reply_failed.connect(self._handle_ai_reply_failed)
+        self.image_loaded.connect(self._on_image_loaded)
 
         self.setWindowTitle("QQMessageManager")
         self.resize(1080, 720)
@@ -437,10 +511,30 @@ class MainWindow(QMainWindow):
         self._refresh_session_item(item, session)
         self._sort_sessions()
 
+        if message.images and load_ai_config(self.settings).allow_image_read_enabled:
+            self._schedule_image_load(message)
+
         if self.current_session_id == message.session_id:
             self._render_current_session()
         elif self.current_session_id is None:
             self.session_list.setCurrentItem(self.session_items[message.session_id])
+
+    def _schedule_image_load(self, message: ChatMessage) -> None:
+        session_id = message.session_id
+        images = list(message.images)
+
+        def worker() -> None:
+            for img in images:
+                local = ensure_cached(img, token=self.token)
+                img.local_path = local or ""
+                img.load_failed = local is None
+            self.image_loaded.emit(session_id)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_image_loaded(self, session_id: str) -> None:
+        if self.current_session_id == session_id:
+            self._render_current_session()
 
     def send_current_message(self) -> None:
         text = self.message_input.text().strip()
@@ -628,7 +722,12 @@ class MainWindow(QMainWindow):
             return
 
         session = self.sessions[session_id]
-        context = self._ai_context_messages(session_id, config.context_message_count)
+        context = self._ai_context_messages(
+            session_id,
+            config.context_message_count,
+            config.allow_image_read_enabled,
+            self.token,
+        )
         self.ai_inflight_sessions.add(session_id)
 
         def worker() -> None:
@@ -706,17 +805,43 @@ class MainWindow(QMainWindow):
             return False
         return datetime.now() - last_time <= timedelta(seconds=seconds)
 
-    def _ai_context_messages(self, session_id: str, count: int) -> list[dict[str, str]]:
+    def _ai_context_messages(
+        self,
+        session_id: str,
+        count: int,
+        allow_image_read_enabled: bool = False,
+        token: str = "",
+    ) -> list[dict[str, Any]]:
         messages = self.messages.get(session_id, [])[-count:]
-        return [
-            {
+        result: list[dict[str, Any]] = []
+        for message in messages:
+            if not message.text.strip() and not (allow_image_read_enabled and message.images):
+                continue
+            item: dict[str, Any] = {
                 "sender_name": message.sender_name,
                 "text": message.text,
                 "outgoing": "1" if message.outgoing else "0",
             }
-            for message in messages
-            if message.text.strip()
-        ]
+            if allow_image_read_enabled and message.images:
+                data_uris = []
+                for img in message.images[:3]:
+                    local = ensure_cached(img, token=token)
+                    if not local or not supported_format(local):
+                        continue
+                    if Path(local).stat().st_size > 10 * 1024 * 1024:
+                        continue
+                    uri = to_data_uri(local)
+                    if uri:
+                        data_uris.append(uri)
+                if data_uris:
+                    item["images"] = data_uris
+                elif any(img.local_path or img.load_failed for img in message.images[:3]):
+                    self.append_log(
+                        f"图片识别跳过：会话 {session_id} 的图片无法读取"
+                        f"（{short_id(message.images[0])}；可能图片地址需要 Token 或不可访问）"
+                    )
+            result.append(item)
+        return result
 
     def _render_current_session(self) -> None:
         if not self.current_session_id:
@@ -741,13 +866,41 @@ class MainWindow(QMainWindow):
         scrollbar = self.chat_browser.verticalScrollBar()
         return scrollbar.maximum() <= 0 or scrollbar.value() >= scrollbar.maximum() - 4
 
-    @staticmethod
-    def _message_html(message: ChatMessage) -> str:
+    def _message_html(self, message: ChatMessage) -> str:
         time_text = message.timestamp.strftime("%H:%M:%S")
         sender = escape(message.sender_name)
-        body = escape(message.text).replace("\n", "<br>") or "<span style='color:#aaa;'>[空消息]</span>"
         align = "right" if message.outgoing else "left"
         bubble_background = "#d9fdd3" if message.outgoing else "#eef9ff"
+
+        allow_images = load_ai_config(self.settings).allow_image_read_enabled
+        image_html = ""
+        if allow_images and message.images:
+            parts = []
+            for img in message.images[:3]:
+                if img.local_path:
+                    src = Path(img.local_path).as_uri()
+                    parts.append(
+                        f"<img src='{src}' "
+                        f"style='max-width:240px;max-height:240px;border-radius:6px;margin-top:4px;display:block;'>"
+                    )
+                elif img.load_failed:
+                    parts.append("<span style='color:#c0392b;'>[图片加载失败]</span>")
+                else:
+                    parts.append("<span style='color:#aaa;'>[图片加载中]</span>")
+            if parts:
+                image_html = "<div style='margin-top:4px;'>" + "".join(parts) + "</div>"
+
+        text = message.text.strip()
+        show_text = text and text != "[图片消息已过滤]"
+        if image_html:
+            body = (escape(text).replace("\n", "<br>") + image_html) if show_text else image_html
+        elif show_text:
+            body = escape(text).replace("\n", "<br>")
+        elif message.images:
+            body = "<span style='color:#aaa;'>[图片消息已过滤]</span>"
+        else:
+            body = "<span style='color:#aaa;'>[空消息]</span>"
+
         return (
             f"<div style='margin: 12px 0; text-align:{align};'>"
             f"<div style='color:#888;font-size:12px;'>{time_text} · {sender}</div>"
@@ -821,6 +974,8 @@ def load_ai_config(settings: QSettings) -> AiReplyConfig:
         provider=_setting_text(settings, "ai/provider", AI_PROVIDER_MINIMAX_M3),
         api_key=_setting_text(settings, "ai/api_key", ""),
         prompt=_setting_text(settings, "ai/prompt", ""),
+        base_url=_setting_text(settings, "ai/base_url", ""),
+        model=_setting_text(settings, "ai/model", ""),
         timed_enabled=_setting_bool(settings, "ai/timed_enabled", False),
         timed_min_seconds=_setting_int(settings, "ai/timed_min_seconds", 10),
         timed_max_seconds=_setting_int(settings, "ai/timed_max_seconds", 20),
@@ -832,6 +987,7 @@ def load_ai_config(settings: QSettings) -> AiReplyConfig:
         mention_max_seconds=_setting_int(settings, "ai/mention_max_seconds", 6),
         prevent_self_follow_enabled=_setting_bool(settings, "ai/prevent_self_follow_enabled", True),
         allow_ai_skip_enabled=_setting_bool(settings, "ai/allow_ai_skip_enabled", False),
+        allow_image_read_enabled=_setting_bool(settings, "ai/allow_image_read_enabled", False),
     ).normalized()
 
 
@@ -840,6 +996,8 @@ def save_ai_config(settings: QSettings, config: AiReplyConfig) -> None:
     settings.setValue("ai/provider", normalized.provider)
     settings.setValue("ai/api_key", normalized.api_key)
     settings.setValue("ai/prompt", normalized.prompt)
+    settings.setValue("ai/base_url", normalized.base_url)
+    settings.setValue("ai/model", normalized.model)
     settings.setValue("ai/timed_enabled", normalized.timed_enabled)
     settings.setValue("ai/timed_min_seconds", normalized.timed_min_seconds)
     settings.setValue("ai/timed_max_seconds", normalized.timed_max_seconds)
@@ -851,6 +1009,7 @@ def save_ai_config(settings: QSettings, config: AiReplyConfig) -> None:
     settings.setValue("ai/mention_max_seconds", normalized.mention_max_seconds)
     settings.setValue("ai/prevent_self_follow_enabled", normalized.prevent_self_follow_enabled)
     settings.setValue("ai/allow_ai_skip_enabled", normalized.allow_ai_skip_enabled)
+    settings.setValue("ai/allow_image_read_enabled", normalized.allow_image_read_enabled)
     settings.sync()
 
 

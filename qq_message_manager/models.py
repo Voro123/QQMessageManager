@@ -8,6 +8,21 @@ SessionKind = Literal["group", "private", "system"]
 
 
 @dataclass(slots=True)
+class ChatImage:
+    """一条图片附件的元数据。base64 不长期保存，仅运行时按需读取。"""
+
+    url: str = ""
+    path: str = ""
+    file: str = ""
+    file_id: str = ""
+    file_unique: str = ""
+    file_size: str = ""
+    mime_type: str = ""
+    local_path: str = ""
+    load_failed: bool = False
+
+
+@dataclass(slots=True)
 class ChatMessage:
     """Normalized message displayed by the UI."""
 
@@ -22,6 +37,7 @@ class ChatMessage:
     outgoing: bool = False
     historical: bool = False
     message_id: str = ""
+    images: list[ChatImage] = field(default_factory=list)
 
 
 @dataclass(slots=True)
