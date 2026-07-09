@@ -11,6 +11,8 @@ from PySide6.QtCore import QObject, QThread, Signal
 from .models import ChatMessage
 
 LOGGER = logging.getLogger(__name__)
+RECENT_SESSION_LIMIT = 20
+HISTORY_MESSAGE_LIMIT = 20
 
 
 class NapCatWorker(QObject):
@@ -19,6 +21,7 @@ class NapCatWorker(QObject):
     connected = Signal()
     disconnected = Signal(str)
     message_received = Signal(object)
+    history_messages_received = Signal(object)
     session_name_updated = Signal(str, str)
     log = Signal(str)
 
@@ -33,6 +36,7 @@ class NapCatWorker(QObject):
         self._echo_index = 0
         self._pending_group_info: set[str] = set()
         self._group_names: dict[str, str] = {}
+        self._history_requested: set[str] = set()
 
     def run(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -83,10 +87,12 @@ class NapCatWorker(QObject):
         websocket = await self._open_websocket(websockets, self.websocket_url, headers)
         self._current_websocket = websocket
         self._pending_group_info.clear()
+        self._history_requested.clear()
         try:
             async with websocket:
                 self.connected.emit()
                 self.log.emit("已连接 NapCatQQ WebSocket")
+                await self._request_recent_sessions()
                 async for payload in websocket:
                     if self._stop_requested:
                         break
@@ -133,6 +139,32 @@ class NapCatWorker(QObject):
         echo_text = str(echo)
         ok = event.get("status") == "ok" or event.get("retcode") == 0
 
+        if echo_text.startswith("recent_sessions:"):
+            if ok:
+                contacts = _extract_recent_contacts(event.get("data"))
+                if not contacts:
+                    self.log.emit("未能从最近会话接口解析到会话；等待新消息时仍会正常显示。")
+                for contact in contacts[:RECENT_SESSION_LIMIT]:
+                    self._request_history(contact["session_id"], contact["kind"], contact.get("name", ""))
+                self.log.emit(f"已请求最近 {min(len(contacts), RECENT_SESSION_LIMIT)} 个会话的历史消息")
+            else:
+                self.log.emit(f"获取最近会话失败：{_action_error(event)}")
+            return True
+
+        if echo_text.startswith("history:"):
+            if ok:
+                session_id = _echo_session_id(echo_text, "history")
+                kind, _ = _split_session_id(session_id)
+                messages = _extract_history_messages(event.get("data"), session_id, kind)
+                if messages:
+                    self.history_messages_received.emit(messages[-HISTORY_MESSAGE_LIMIT:])
+                    self.log.emit(f"已加载 {session_id} 的 {len(messages[-HISTORY_MESSAGE_LIMIT:])} 条历史消息")
+                else:
+                    self.log.emit(f"{session_id} 没有解析到历史消息")
+            else:
+                self.log.emit(f"获取历史消息失败：{_action_error(event)}")
+            return True
+
         if echo_text.startswith("get_group_info:"):
             group_id = echo_text.split(":", 2)[1]
             self._pending_group_info.discard(group_id)
@@ -142,17 +174,46 @@ class NapCatWorker(QObject):
                 self._group_names[group_id] = group_name
                 self.session_name_updated.emit(f"group:{group_id}", group_name)
             else:
-                self.log.emit(f"获取群信息失败：{event.get('message') or event.get('wording') or event.get('retcode')}")
+                self.log.emit(f"获取群信息失败：{_action_error(event)}")
             return True
 
         if echo_text.startswith("send_msg:"):
             if ok:
                 self.log.emit("消息已发送")
             else:
-                self.log.emit(f"消息发送失败：{event.get('message') or event.get('wording') or event.get('retcode')}")
+                self.log.emit(f"消息发送失败：{_action_error(event)}")
             return True
 
         return True
+
+    async def _request_recent_sessions(self) -> None:
+        await self._send_action(
+            "get_recent_contact",
+            {"count": RECENT_SESSION_LIMIT},
+            self._next_echo("recent_sessions"),
+        )
+
+    def _request_history(self, session_id: str, kind: str, name: str = "") -> None:
+        if session_id in self._history_requested:
+            return
+        self._history_requested.add(session_id)
+        if name:
+            self.session_name_updated.emit(session_id, name)
+
+        _, target_id = _split_session_id(session_id)
+        if not target_id:
+            return
+
+        if kind == "group":
+            action = "get_group_msg_history"
+            params = {"group_id": _onebot_id(target_id), "count": HISTORY_MESSAGE_LIMIT}
+        elif kind == "private":
+            action = "get_friend_msg_history"
+            params = {"user_id": _onebot_id(target_id), "count": HISTORY_MESSAGE_LIMIT}
+        else:
+            return
+
+        asyncio.create_task(self._send_action(action, params, self._next_echo(f"history:{session_id}")))
 
     def _enrich_group_message(self, message: ChatMessage) -> None:
         if message.session_kind != "group":
@@ -236,6 +297,7 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
     sender_name = _first_text(sender.get("card"), sender.get("nickname"), sender_id)
     text = message_to_text(event.get("message"), event.get("raw_message"))
     timestamp = _event_time(event.get("time"))
+    message_id = str(event.get("message_id") or event.get("messageId") or event.get("msg_id") or "")
 
     if message_type == "group":
         group_id = str(event.get("group_id") or "未知群")
@@ -256,6 +318,7 @@ def normalize_message_event(event: dict[str, Any]) -> ChatMessage | None:
         text=text,
         timestamp=timestamp,
         raw_event=event,
+        message_id=message_id,
     )
 
 
@@ -300,6 +363,167 @@ def _segment_to_text(segment: Any) -> str:
     return f"[{label}]"
 
 
+def _extract_recent_contacts(data: Any) -> list[dict[str, str]]:
+    items = _extract_list(data, ("items", "list", "contacts", "recent", "rows", "data"))
+    contacts: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = _contact_kind(item)
+        target_id = _contact_target_id(item, kind)
+        if not kind or not target_id:
+            continue
+        session_id = f"{kind}:{target_id}"
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        contacts.append(
+            {
+                "kind": kind,
+                "target_id": target_id,
+                "session_id": session_id,
+                "name": _contact_name(item, kind, target_id),
+            }
+        )
+    return contacts
+
+
+def _contact_kind(item: dict[str, Any]) -> str:
+    if _first_text(item.get("group_id"), item.get("groupId"), item.get("group_uin"), item.get("groupUin")):
+        return "group"
+
+    raw_kind = _first_text(
+        item.get("type"),
+        item.get("chat_type"),
+        item.get("chatType"),
+        item.get("peerType"),
+        item.get("msgType"),
+        item.get("contactType"),
+    ).lower()
+
+    if raw_kind in {"group", "group_chat", "troop", "2", "群", "群聊"} or "group" in raw_kind:
+        return "group"
+    if raw_kind in {"private", "friend", "c2c", "user", "0", "1", "好友", "私聊"} or "friend" in raw_kind:
+        return "private"
+    return "private" if _first_text(item.get("user_id"), item.get("userId"), item.get("uin"), item.get("peerUin")) else ""
+
+
+def _contact_target_id(item: dict[str, Any], kind: str) -> str:
+    if kind == "group":
+        return _first_text(
+            item.get("group_id"),
+            item.get("groupId"),
+            item.get("group_uin"),
+            item.get("groupUin"),
+            item.get("peerUin"),
+            item.get("peer_uin"),
+            item.get("uin"),
+        )
+    return _first_text(
+        item.get("user_id"),
+        item.get("userId"),
+        item.get("user_uin"),
+        item.get("userUin"),
+        item.get("peerUin"),
+        item.get("peer_uin"),
+        item.get("uin"),
+    )
+
+
+def _contact_name(item: dict[str, Any], kind: str, target_id: str) -> str:
+    fallback = f"群聊 {target_id}" if kind == "group" else f"QQ {target_id}"
+    return _first_text(
+        item.get("group_name"),
+        item.get("groupName"),
+        item.get("peerName"),
+        item.get("remark"),
+        item.get("nick"),
+        item.get("nickname"),
+        item.get("name"),
+        fallback,
+    )
+
+
+def _extract_history_messages(data: Any, session_id: str, kind: str) -> list[ChatMessage]:
+    items = _extract_list(data, ("messages", "msg_list", "msgList", "list", "items", "data", "rows"))
+    messages = [
+        message
+        for item in items
+        if isinstance(item, dict)
+        for message in [_history_item_to_message(item, session_id, kind)]
+        if message is not None
+    ]
+    messages.sort(key=lambda message: message.timestamp)
+    return messages
+
+
+def _history_item_to_message(item: dict[str, Any], session_id: str, kind: str) -> ChatMessage | None:
+    session_kind = "group" if kind == "group" else "private"
+    target_id = _session_target_id(session_id)
+    sender = item.get("sender") or item.get("sender_info") or item.get("senderInfo") or {}
+    if not isinstance(sender, dict):
+        sender = {}
+    sender_id = _first_text(
+        item.get("user_id"),
+        item.get("userId"),
+        item.get("sender_uin"),
+        item.get("senderUin"),
+        sender.get("user_id"),
+        sender.get("userId"),
+        sender.get("uin"),
+        "未知用户",
+    )
+    sender_name = _first_text(
+        sender.get("card"),
+        sender.get("nickname"),
+        item.get("sendNickName"),
+        item.get("senderName"),
+        sender_id,
+    )
+    text = message_to_text(
+        item.get("message") or item.get("elements") or item.get("messageList"),
+        item.get("raw_message") or item.get("rawMessage") or item.get("msg") or item.get("msgText"),
+    )
+    if not text:
+        text = "[历史消息]"
+    session_name = _first_text(
+        item.get("group_name"),
+        item.get("groupName"),
+        item.get("peerName"),
+        f"群聊 {target_id}" if session_kind == "group" else f"QQ {target_id}",
+    )
+    return ChatMessage(
+        session_id=session_id,
+        session_name=session_name,
+        session_kind=session_kind,
+        sender_id=sender_id,
+        sender_name=sender_name,
+        text=text,
+        timestamp=_event_time(item.get("time") or item.get("msgTime") or item.get("timestamp")),
+        raw_event=item,
+        historical=True,
+        message_id=str(item.get("message_id") or item.get("messageId") or item.get("msg_id") or item.get("msgId") or item.get("msgSeq") or item.get("seq") or ""),
+    )
+
+
+def _extract_list(data: Any, keys: tuple[str, ...]) -> list[Any]:
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = _extract_list(value, keys)
+            if nested:
+                return nested
+    return []
+
+
 def _event_time(value: Any) -> datetime:
     try:
         return datetime.fromtimestamp(int(value))
@@ -314,6 +538,10 @@ def _first_text(*values: Any) -> str:
     return ""
 
 
+def _action_error(event: dict[str, Any]) -> str:
+    return str(event.get("message") or event.get("wording") or event.get("retcode") or "未知错误")
+
+
 def _split_session_id(session_id: str) -> tuple[str, str]:
     if ":" not in session_id:
         return session_id, ""
@@ -325,6 +553,11 @@ def _session_target_id(session_id: str) -> str:
     return _split_session_id(session_id)[1]
 
 
+def _echo_session_id(echo_text: str, prefix: str) -> str:
+    body = echo_text[len(prefix) + 1 :]
+    return ":".join(body.split(":")[:-1]) if ":" in body else body
+
+
 def _onebot_id(value: str) -> int | str:
     return int(value) if value.isdigit() else value
 
@@ -333,6 +566,7 @@ class NapCatClientThread(QThread):
     connected = Signal()
     disconnected = Signal(str)
     message_received = Signal(object)
+    history_messages_received = Signal(object)
     session_name_updated = Signal(str, str)
     log = Signal(str)
 
@@ -345,6 +579,7 @@ class NapCatClientThread(QThread):
         self.worker.connected.connect(self.connected)
         self.worker.disconnected.connect(self.disconnected)
         self.worker.message_received.connect(self.message_received)
+        self.worker.history_messages_received.connect(self.history_messages_received)
         self.worker.session_name_updated.connect(self.session_name_updated)
         self.worker.log.connect(self.log)
 
