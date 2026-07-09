@@ -20,6 +20,8 @@ class ChatMessage:
     timestamp: datetime = field(default_factory=datetime.now)
     raw_event: dict[str, Any] = field(default_factory=dict)
     outgoing: bool = False
+    historical: bool = False
+    message_id: str = ""
 
 
 @dataclass(slots=True)
