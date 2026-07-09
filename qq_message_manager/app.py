@@ -5,7 +5,7 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
-from .ui import QQMessageManagerApp
+from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
 
 
 def main() -> int:
@@ -14,7 +14,8 @@ def main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     app = QApplication(sys.argv)
-    app.setApplicationName("QQMessageManager")
+    app.setOrganizationName(SETTINGS_ORGANIZATION)
+    app.setApplicationName(SETTINGS_APPLICATION)
     manager = QQMessageManagerApp(app)
     manager.show()
     return app.exec()
