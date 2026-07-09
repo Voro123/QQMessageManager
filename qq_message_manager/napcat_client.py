@@ -58,8 +58,10 @@ class NapCatWorker(QObject):
                 message = f"连接失败：{exc}"
                 LOGGER.exception(message)
                 self.disconnected.emit(message)
-                if not self._stop_requested:
-                    await asyncio.sleep(self.reconnect_interval)
+
+            if not self._stop_requested:
+                self.log.emit(f"{self.reconnect_interval:g} 秒后尝试重新连接")
+                await asyncio.sleep(self.reconnect_interval)
 
     async def _connect_once(self) -> None:
         import websockets
@@ -78,7 +80,8 @@ class NapCatWorker(QObject):
                     self._handle_payload(payload)
         finally:
             self._current_websocket = None
-        self.disconnected.emit("连接已断开")
+        if not self._stop_requested:
+            self.disconnected.emit("连接已断开")
 
     def _build_headers(self) -> dict[str, str]:
         if not self.token:
@@ -217,4 +220,4 @@ class NapCatClientThread(QThread):
     def stop(self) -> None:
         self.worker.stop()
         self.quit()
-        self.wait(2000)
+        self.wait(4000)
