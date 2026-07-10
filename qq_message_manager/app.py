@@ -9,6 +9,8 @@ from . import ai_client as ai_module
 from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
 from . import automation_feature as automation_module
+from . import automation_file_import as automation_file_import_module
+from . import automation_storage as automation_storage_module
 from . import chat_summary_feature as chat_summary_module
 from . import chat_summary_skill as chat_summary_skill_module
 from . import image_generation_feature as image_generation_module
@@ -24,8 +26,10 @@ from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .automation_archive_patch import install_automation_archive_patch
 from .automation_feature import install_automation_feature
+from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
 from .automation_patches import install_automation_patches
+from .automation_stage2_ui import install_automation_stage2_ui
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .chat_summary_people_patch import install_chat_summary_people_filter_patch
@@ -65,6 +69,13 @@ install_chat_summary_people_filter_patch(chat_summary_skill_module)
 install_automation_feature(ui_module, ai_module, napcat_module)
 install_automation_patches(automation_module, skill_library_module, ui_module)
 install_automation_hardening(automation_module, ui_module)
+# 第二阶段先安装真实文件读取和用户导入，再让归档层捕获新的读取器。
+install_automation_file_import(automation_module, automation_storage_module)
+install_automation_stage2_ui(
+    automation_module,
+    automation_file_import_module,
+    automation_storage_module,
+)
 install_automation_archive_patch(automation_module)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
