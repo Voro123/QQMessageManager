@@ -2,17 +2,19 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtCore import QObject, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -27,11 +29,15 @@ from .image_layout_patch import _display_image_info
 from .models import ChatImage
 
 LOCK_FILE_SUFFIX = ".locks.json"
+THUMBNAIL_SIZE = 112
+THUMBNAIL_GRID_WIDTH = 148
+THUMBNAIL_GRID_HEIGHT = 158
+THUMBNAIL_WORKERS = 4
 
 
 class StickerPreviewBridge(QObject):
-    preview_ready = Signal(str, str)
-    preview_failed = Signal(str)
+    preview_ready = Signal(str, str, int)
+    preview_failed = Signal(str, int)
 
 
 def install_sticker_library_feature(ui_module: Any, sticker_module: Any) -> None:
@@ -126,7 +132,7 @@ def _install_library_button(ui_module: Any) -> None:
     def init_with_sticker_library(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
         self.sticker_library_button = QPushButton("表情包库")
-        self.sticker_library_button.setToolTip("查看、锁定或删除 AI 已记忆的表情包")
+        self.sticker_library_button.setToolTip("以缩略图网格查看、锁定或删除 AI 已记忆的表情包")
         self.sticker_library_button.clicked.connect(lambda: _open_sticker_library(self))
 
         send_bar = self.message_input.parentWidget()
@@ -155,24 +161,46 @@ class StickerLibraryDialog(QDialog):
         self.memory = memory
         self.token = token
         self.current_sticker_id = ""
+        self.item_by_id: dict[str, QListWidgetItem] = {}
+        self.preview_paths: dict[str, str] = {}
+        self.thumbnail_generation = 0
+
         self.preview_bridge = StickerPreviewBridge(self)
         self.preview_bridge.preview_ready.connect(self._on_preview_ready)
         self.preview_bridge.preview_failed.connect(self._on_preview_failed)
 
         self.setWindowTitle("AI 表情包库")
-        self.resize(860, 600)
-        self.setMinimumSize(720, 500)
+        self.resize(1100, 700)
+        self.setMinimumSize(900, 560)
 
         self.count_label = QLabel()
+        self.grid_tip = QLabel("直接点击缩略图查看详情；🔒 表示该表情包不会被自动替换。")
+        self.grid_tip.setStyleSheet("color:#777;")
+
         self.list_widget = QListWidget()
-        self.list_widget.setMinimumWidth(300)
+        self.list_widget.setViewMode(QListView.ViewMode.IconMode)
+        self.list_widget.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list_widget.setMovement(QListView.Movement.Static)
+        self.list_widget.setLayoutMode(QListView.LayoutMode.Batched)
+        self.list_widget.setBatchSize(20)
+        self.list_widget.setWrapping(True)
+        self.list_widget.setWordWrap(True)
+        self.list_widget.setSpacing(8)
+        self.list_widget.setIconSize(QSize(THUMBNAIL_SIZE, THUMBNAIL_SIZE))
+        self.list_widget.setGridSize(QSize(THUMBNAIL_GRID_WIDTH, THUMBNAIL_GRID_HEIGHT))
+        self.list_widget.setMinimumWidth(560)
+        self.list_widget.setStyleSheet(
+            "QListWidget { background:#f6f7f9; border:1px solid #d9dde3; border-radius:8px; }"
+            "QListWidget::item { background:white; border:1px solid #e1e4e8; border-radius:8px; padding:6px; }"
+            "QListWidget::item:selected { background:#e8f3ff; border:2px solid #409eff; color:#111; }"
+        )
         self.list_widget.currentItemChanged.connect(self._on_current_item_changed)
 
-        self.preview_label = QLabel("选择一个表情包查看预览")
+        self.preview_label = QLabel("点击左侧任意缩略图查看大图")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumSize(320, 320)
         self.preview_label.setStyleSheet(
-            "QLabel { background: white; border: 1px solid #d9dde3; border-radius: 8px; color: #888; }"
+            "QLabel { background:white; border:1px solid #d9dde3; border-radius:8px; color:#888; }"
         )
 
         self.id_value = _selectable_label("-")
@@ -200,7 +228,7 @@ class StickerLibraryDialog(QDialog):
         self.delete_button = QPushButton("删除")
         self.delete_button.setEnabled(False)
         self.delete_button.clicked.connect(self._delete_selected)
-        refresh_button = QPushButton("刷新")
+        refresh_button = QPushButton("刷新缩略图")
         refresh_button.clicked.connect(self._refresh_records)
 
         action_layout = QHBoxLayout()
@@ -211,11 +239,14 @@ class StickerLibraryDialog(QDialog):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.count_label)
+        left_layout.addWidget(self.grid_tip)
         left_layout.addWidget(self.list_widget, 1)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(8, 0, 0, 0)
         right_layout.addWidget(self.preview_label, 0, Qt.AlignmentFlag.AlignHCenter)
         right_layout.addLayout(detail_form)
         right_layout.addLayout(action_layout)
@@ -224,9 +255,9 @@ class StickerLibraryDialog(QDialog):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
-        splitter.setSizes([310, 540])
+        splitter.setSizes([700, 380])
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.reject)
@@ -241,8 +272,12 @@ class StickerLibraryDialog(QDialog):
     def _refresh_records(self, keep_id: str = "") -> None:
         self.memory.load()
         selected_id = keep_id or self.current_sticker_id
+        self.thumbnail_generation += 1
+        generation = self.thumbnail_generation
+
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
+        self.item_by_id.clear()
 
         records = sorted(
             self.memory.all_records(),
@@ -252,16 +287,36 @@ class StickerLibraryDialog(QDialog):
                 record.summary or record.id,
             ),
         )
+        valid_ids = {record.id for record in records}
+        self.preview_paths = {
+            sticker_id: path
+            for sticker_id, path in self.preview_paths.items()
+            if sticker_id in valid_ids and Path(path).exists()
+        }
+
         selected_item: QListWidgetItem | None = None
+        missing_records: list[Any] = []
         for record in records:
             locked = self.memory.is_locked(record.id)
-            prefix = "🔒 " if locked else ""
-            item = QListWidgetItem(
-                f"{prefix}{record.summary or '表情包'}\n"
-                f"使用 {record.use_count} 次 · {record.source_type} · {record.id}"
-            )
+            item = QListWidgetItem(_thumbnail_text(record, locked))
             item.setData(Qt.ItemDataRole.UserRole, record.id)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignHCenter)
+            item.setSizeHint(QSize(THUMBNAIL_GRID_WIDTH, THUMBNAIL_GRID_HEIGHT))
+            item.setToolTip(
+                f"{record.summary or '表情包'}\n"
+                f"用途：{record.usage_hint or '-'}\n"
+                f"使用次数：{record.use_count}\n"
+                f"状态：{'已锁定' if locked else '未锁定'}"
+            )
             self.list_widget.addItem(item)
+            self.item_by_id[record.id] = item
+
+            cached_preview = self.preview_paths.get(record.id)
+            if cached_preview:
+                self._set_thumbnail_icon(item, cached_preview)
+            else:
+                missing_records.append(record)
+
             if record.id == selected_id:
                 selected_item = item
 
@@ -279,6 +334,31 @@ class StickerLibraryDialog(QDialog):
             self.current_sticker_id = ""
             self._clear_details("当前还没有记忆任何表情包")
 
+        if missing_records:
+            self._load_thumbnail_batch(missing_records, generation)
+
+    def _load_thumbnail_batch(self, records: list[Any], generation: int) -> None:
+        token = self.token
+
+        def coordinator() -> None:
+            with ThreadPoolExecutor(max_workers=THUMBNAIL_WORKERS) as pool:
+                futures = {
+                    pool.submit(_prepare_record_preview, record, token): record.id
+                    for record in records
+                }
+                for future in as_completed(futures):
+                    sticker_id = futures[future]
+                    try:
+                        path = future.result()
+                    except Exception:  # noqa: BLE001
+                        path = ""
+                    if path:
+                        self.preview_bridge.preview_ready.emit(sticker_id, path, generation)
+                    else:
+                        self.preview_bridge.preview_failed.emit(sticker_id, generation)
+
+        threading.Thread(target=coordinator, daemon=True).start()
+
     def _on_current_item_changed(
         self,
         current: QListWidgetItem | None,
@@ -287,7 +367,7 @@ class StickerLibraryDialog(QDialog):
         del previous
         if current is None:
             self.current_sticker_id = ""
-            self._clear_details("选择一个表情包查看预览")
+            self._clear_details("点击左侧任意缩略图查看大图")
             return
         sticker_id = str(current.data(Qt.ItemDataRole.UserRole) or "")
         self.current_sticker_id = sticker_id
@@ -308,50 +388,60 @@ class StickerLibraryDialog(QDialog):
         self.lock_button.setText("解除锁定" if locked else "锁定")
         self.lock_button.setEnabled(True)
         self.delete_button.setEnabled(True)
-        self.preview_label.setPixmap(QPixmap())
-        self.preview_label.setText("正在加载预览…")
-        self._load_preview(record)
 
-    def _load_preview(self, record: Any) -> None:
-        sticker_id = record.id
-        image = ChatImage(
-            url=record.url,
-            path=record.path,
-            file=record.file,
-            file_id=record.file_id,
-            file_unique=record.file_unique,
-        )
+        path = self.preview_paths.get(sticker_id)
+        if path:
+            self._show_large_preview(path)
+        else:
+            self.preview_label.setPixmap(QPixmap())
+            self.preview_label.setText("正在加载预览…")
 
-        def worker() -> None:
-            local_path = ensure_cached(image, token=self.token)
-            if not local_path:
-                self.preview_bridge.preview_failed.emit(sticker_id)
-                return
-            display_path, _width, _height = _display_image_info(local_path)
-            self.preview_bridge.preview_ready.emit(sticker_id, display_path)
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _on_preview_ready(self, sticker_id: str, path: str) -> None:
-        if sticker_id != self.current_sticker_id:
+    def _on_preview_ready(self, sticker_id: str, path: str, generation: int) -> None:
+        if generation != self.thumbnail_generation:
             return
+        self.preview_paths[sticker_id] = path
+        item = self.item_by_id.get(sticker_id)
+        if item is not None:
+            self._set_thumbnail_icon(item, path)
+        if sticker_id == self.current_sticker_id:
+            self._show_large_preview(path)
+
+    def _on_preview_failed(self, sticker_id: str, generation: int) -> None:
+        if generation != self.thumbnail_generation:
+            return
+        item = self.item_by_id.get(sticker_id)
+        if item is not None:
+            item.setToolTip(item.toolTip() + "\n预览：无法读取")
+        if sticker_id == self.current_sticker_id:
+            self.preview_label.setPixmap(QPixmap())
+            self.preview_label.setText("当前记录没有可读取的图片预览")
+
+    def _set_thumbnail_icon(self, item: QListWidgetItem, path: str) -> None:
         pixmap = QPixmap(path)
         if pixmap.isNull():
+            return
+        scaled = pixmap.scaled(
+            THUMBNAIL_SIZE,
+            THUMBNAIL_SIZE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        item.setIcon(QIcon(scaled))
+
+    def _show_large_preview(self, path: str) -> None:
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText("预览读取失败")
             return
         scaled = pixmap.scaled(
-            300,
-            300,
+            310,
+            310,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self.preview_label.setText("")
         self.preview_label.setPixmap(scaled)
-
-    def _on_preview_failed(self, sticker_id: str) -> None:
-        if sticker_id == self.current_sticker_id:
-            self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText("当前记录没有可读取的图片预览")
 
     def _toggle_lock(self) -> None:
         sticker_id = self.current_sticker_id
@@ -377,6 +467,7 @@ class StickerLibraryDialog(QDialog):
             return
         self.memory.delete_record(sticker_id)
         self.current_sticker_id = ""
+        self.preview_paths.pop(sticker_id, None)
         self._refresh_records()
 
     def _clear_details(self, preview_text: str) -> None:
@@ -395,6 +486,29 @@ class StickerLibraryDialog(QDialog):
             label.setText("-")
         self.lock_button.setEnabled(False)
         self.delete_button.setEnabled(False)
+
+
+def _prepare_record_preview(record: Any, token: str) -> str:
+    image = ChatImage(
+        url=record.url,
+        path=record.path,
+        file=record.file,
+        file_id=record.file_id,
+        file_unique=record.file_unique,
+    )
+    local_path = ensure_cached(image, token=token)
+    if not local_path:
+        return ""
+    display_path, _width, _height = _display_image_info(local_path)
+    return display_path
+
+
+def _thumbnail_text(record: Any, locked: bool) -> str:
+    summary = (record.summary or "表情包").strip()
+    if len(summary) > 12:
+        summary = summary[:11] + "…"
+    prefix = "🔒 " if locked else ""
+    return f"{prefix}{summary}\n使用 {record.use_count} 次"
 
 
 def _selectable_label(text: str) -> QLabel:
