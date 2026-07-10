@@ -31,6 +31,8 @@ from .automation_hardening import install_automation_hardening
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
 from .automation_stage2_ui import install_automation_stage2_ui
+from .automation_stage3_feature import install_automation_stage3_feature
+from .automation_stage3_transfer import install_automation_stage3_transfer
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .chat_summary_people_patch import install_chat_summary_people_filter_patch
@@ -68,6 +70,8 @@ install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
 install_chat_summary_people_filter_patch(chat_summary_skill_module)
 # 定时任务系统负责调度、可信任务上下文、受限文件工作区和 NapCat 文件上传。
 install_automation_feature(ui_module, ai_module, napcat_module)
+# 第三阶段传输层必须在基础 NapCat 自动化动作安装后接入。
+install_automation_stage3_transfer(napcat_module)
 install_automation_patches(automation_module, skill_library_module, ui_module)
 install_automation_hardening(automation_module, ui_module)
 # 第二阶段先安装真实文件读取、已有记录优先级和用户导入，再让归档层捕获新的读取器。
@@ -79,6 +83,13 @@ install_automation_stage2_ui(
     automation_storage_module,
 )
 install_automation_archive_patch(automation_module)
+# 第三阶段最后统一增加发送前校验、测试发送、好友探测和发送记录。
+install_automation_stage3_feature(
+    automation_module,
+    automation_file_import_module,
+    automation_storage_module,
+    ui_module,
+)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
