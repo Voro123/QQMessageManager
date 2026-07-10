@@ -10,6 +10,7 @@ from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
 from . import automation_feature as automation_module
 from . import automation_file_import as automation_file_import_module
+from . import automation_history_cursor_dispatch as automation_history_cursor_module
 from . import automation_history_reliability as automation_history_reliability_module
 from . import automation_stage3_feature as automation_stage3_feature_module
 from . import automation_stage3_transfer as automation_stage3_transfer_module
@@ -37,6 +38,7 @@ from .automation_hardening import install_automation_hardening
 from .automation_history_anchor import install_automation_history_anchor
 from .automation_history_checkpoint_guard import install_automation_history_checkpoint_guard
 from .automation_history_cursor_dispatch import install_automation_history_cursor_dispatch
+from .automation_history_direction_guard import install_automation_history_direction_guard
 from .automation_history_reliability import install_automation_history_reliability
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
@@ -125,6 +127,11 @@ install_automation_history_cursor_dispatch(
     automation_history_reliability_module,
     napcat_module,
     ui_module,
+)
+# NapCat 不同版本对 reverse_order 的实际方向不一致；没有更大序号时自动试反方向。
+install_automation_history_direction_guard(
+    automation_history_cursor_module,
+    napcat_module,
 )
 # 空消息成功执行时保留上次 NapCat 消息 ID，避免下一轮丢失游标起点。
 install_automation_history_checkpoint_guard(automation_module)
