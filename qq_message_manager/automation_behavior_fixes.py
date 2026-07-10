@@ -127,7 +127,8 @@ def _archive_sent_bundles(
     cutoff: Any,
     upload_id: str,
 ) -> str:
-    parent = delivered_path.resolve().parent
+    delivered_path = delivered_path.resolve()
+    parent = delivered_path.parent
     if not parent.is_dir():
         return ""
 
@@ -137,9 +138,21 @@ def _archive_sent_bundles(
     # the next day.
     active_path = automation_module.artifact_path(task, cutoff.date()).resolve()
     active_sidecar = Path(str(active_path) + ".records.json")
+    delivered_sidecar = Path(str(delivered_path) + ".records.json")
     safe_upload_id = "".join(char for char in upload_id if char.isalnum() or char in "_-")[-24:]
     folder_name = f"{cutoff:%Y-%m-%d_%H%M%S}_{safe_upload_id or 'sent'}"
     destination = parent / "sent" / folder_name
+
+    # A template without {date} resolves the delivered archive and the new
+    # active file to the same path. Preserve a copy first, then reset the root
+    # file to an empty workbook/table for the next period.
+    same_active_path = delivered_path == active_path
+    if same_active_path and delivered_path.is_file():
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(delivered_path, destination / delivered_path.name)
+        if delivered_sidecar.is_file():
+            shutil.copy2(delivered_sidecar, destination / delivered_sidecar.name)
+        automation_module.write_artifact(task, cutoff.date(), [])
 
     candidates: list[Path] = []
     for item in parent.iterdir():
@@ -154,7 +167,7 @@ def _archive_sent_bundles(
             continue
         candidates.append(item)
 
-    if not candidates:
+    if not candidates and not same_active_path:
         return ""
     destination.mkdir(parents=True, exist_ok=True)
     for source in candidates:
