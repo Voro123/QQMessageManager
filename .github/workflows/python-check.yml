@@ -13,11 +13,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install smoke-test dependency
-        run: python -m pip install "openpyxl>=3.1.5"
+      - name: Install project dependencies
+        run: python -m pip install -r requirements.txt
       - name: Compile Python sources
         run: python -m compileall -q qq_message_manager main.py
-      - name: Test automation scheduling, storage, import and delivery helpers
+      - name: Import application patches
+        run: python -c "import qq_message_manager.app"
+      - name: Test automation scheduling, local message log, storage, import and delivery helpers
         run: |
           python - <<'PY'
           import csv
@@ -30,6 +32,7 @@ jobs:
           from openpyxl import load_workbook
 
           from qq_message_manager.automation_file_import import read_artifact_records
+          from qq_message_manager.automation_local_message_log import LocalMessageLogStore
           from qq_message_manager.automation_models import (
               AutomationTask,
               TRANSFER_AUTO,
@@ -43,6 +46,7 @@ jobs:
               _extract_remote_file_path,
               _resolved_transfer_mode,
           )
+          from qq_message_manager.models import ChatMessage
           import qq_message_manager.automation_storage as storage
 
           task = AutomationTask.create_default()
@@ -62,6 +66,52 @@ jobs:
           assert _extract_remote_file_path({"data": {"status": "file_complete", "file_path": "/tmp/a.xlsx"}}) == "/tmp/a.xlsx"
           assert _is_stream_progress({"type": "stream", "data_type": "data_chunk"})
           assert not _is_stream_progress({"type": "response", "data": {"file_path": "/tmp/a.xlsx"}})
+
+          with tempfile.TemporaryDirectory() as temp_dir:
+              log_store = LocalMessageLogStore(Path(temp_dir) / "automation.sqlite3")
+              live = ChatMessage(
+                  session_id="group:123",
+                  session_name="测试群",
+                  session_kind="group",
+                  sender_id="10001",
+                  sender_name="甲",
+                  text="实时问题",
+                  timestamp=datetime(2000, 1, 1, 0, 0, 0),
+                  message_id="message-live-1",
+              )
+              historical = ChatMessage(
+                  session_id="group:123",
+                  session_name="测试群",
+                  session_kind="group",
+                  sender_id="10002",
+                  sender_name="乙",
+                  text="启动历史",
+                  historical=True,
+                  message_id="message-history-1",
+              )
+              scheduled = ChatMessage(
+                  session_id="group:123",
+                  session_name="测试群",
+                  session_kind="group",
+                  sender_id="scheduled_task",
+                  sender_name="定时任务",
+                  text="任务输出",
+                  outgoing=True,
+              )
+              received = datetime(2026, 1, 1, 10, 20, 0, 123456)
+              assert log_store.append(live, received)
+              assert not log_store.append(historical, received)
+              assert not log_store.append(scheduled, received)
+              messages, total = log_store.read_range(
+                  "group:123",
+                  datetime(2026, 1, 1, 10, 19, 0),
+                  datetime(2026, 1, 1, 10, 21, 0),
+                  20,
+              )
+              assert total == 1 and len(messages) == 1
+              assert messages[0].text == "实时问题"
+              assert messages[0].timestamp == received
+              assert messages[0].message_id == "message-live-1"
 
           task.file_enabled = True
           task.file_format = "xlsx"
