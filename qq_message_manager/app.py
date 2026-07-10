@@ -22,6 +22,7 @@ from .ai_min_speech_interval import install_ai_min_speech_interval
 from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
+from .automation_archive_patch import install_automation_archive_patch
 from .automation_feature import install_automation_feature
 from .automation_hardening import install_automation_hardening
 from .automation_patches import install_automation_patches
@@ -64,6 +65,7 @@ install_chat_summary_people_filter_patch(chat_summary_skill_module)
 install_automation_feature(ui_module, ai_module, napcat_module)
 install_automation_patches(automation_module, skill_library_module, ui_module)
 install_automation_hardening(automation_module, ui_module)
+install_automation_archive_patch(automation_module)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
