@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+import math
+import tempfile
 from functools import lru_cache
 from html import escape
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from PySide6.QtGui import QImageReader
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QImage, QImageReader
 
 IMAGE_MAX_WIDTH = 280
 IMAGE_MAX_HEIGHT = 280
+ANALYSIS_MAX_SIDE = 512
+ALPHA_THRESHOLD = 12
+WHITE_THRESHOLD = 248
+PREVIEW_DIR = Path(tempfile.gettempdir()) / "qq_message_manager" / "display_previews"
 
 
 def install_image_layout_fix(ui_module: Any) -> None:
-    """为 QTextBrowser 中的图片写入明确宽高，避免按原图尺寸预留大片空白。"""
+    """修复 QTextBrowser 图片占位，并裁掉表情包透明画布边缘。"""
     main_window_cls = ui_module.MainWindow
     if getattr(main_window_cls, "_image_layout_fix_installed", False):
         return
@@ -32,8 +40,9 @@ def install_image_layout_fix(ui_module: Any) -> None:
             for image in message.images[:3]:
                 if image.local_path:
                     local_path = str(Path(image.local_path).resolve())
-                    src = Path(local_path).as_uri()
-                    width, height = _scaled_image_size(local_path)
+                    is_sticker = _looks_like_sticker(image)
+                    display_path, width, height = _display_image_info(local_path, is_sticker)
+                    src = Path(display_path).as_uri()
                     parts.append(
                         f"<img src='{src}' width='{width}' height='{height}' "
                         "style='margin-top:6px;border-radius:10px;'>"
@@ -70,16 +79,167 @@ def install_image_layout_fix(ui_module: Any) -> None:
     main_window_cls._image_layout_fix_installed = True
 
 
+def _looks_like_sticker(image: Any) -> bool:
+    file_value = str(getattr(image, "file", "") or "").lower()
+    url_value = str(getattr(image, "url", "") or "").lower()
+    path_value = str(getattr(image, "path", "") or "").lower()
+    return (
+        file_value == "marketface"
+        or "marketface" in file_value
+        or "marketface" in url_value
+        or "marketface" in path_value
+        or "mface" in url_value
+        or "mface" in path_value
+    )
+
+
+def _display_image_info(path: str, is_sticker: bool) -> tuple[str, int, int]:
+    try:
+        stat = Path(path).stat()
+        return _prepare_display_image(path, is_sticker, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        width, height = _scaled_image_size(path)
+        return path, width, height
+
+
+@lru_cache(maxsize=512)
+def _prepare_display_image(
+    path: str,
+    is_sticker: bool,
+    modified_ns: int,
+    file_size: int,
+) -> tuple[str, int, int]:
+    del modified_ns, file_size
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    image = reader.read()
+    if image.isNull():
+        width, height = _scaled_image_size(path)
+        return path, width, height
+
+    crop_rect = _transparent_content_bounds(image)
+    if crop_rect is None or not _is_meaningful_crop(image.rect(), crop_rect):
+        crop_rect = _nonwhite_content_bounds(image) if is_sticker else None
+
+    display_path = path
+    display_image = image
+    if crop_rect is not None and _is_meaningful_crop(image.rect(), crop_rect):
+        crop_rect = _add_crop_padding(crop_rect, image.rect())
+        display_image = image.copy(crop_rect)
+        preview_path = _preview_path(path, crop_rect)
+        try:
+            PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+            if not preview_path.exists():
+                display_image.save(str(preview_path), "PNG")
+            if preview_path.exists():
+                display_path = str(preview_path)
+        except OSError:
+            display_path = path
+            display_image = image
+
+    width, height = _scaled_size(display_image.width(), display_image.height())
+    return display_path, width, height
+
+
+def _transparent_content_bounds(image: QImage) -> QRect | None:
+    if not image.hasAlphaChannel():
+        return None
+    return _content_bounds(image, lambda color: color.alpha() > ALPHA_THRESHOLD)
+
+
+def _nonwhite_content_bounds(image: QImage) -> QRect | None:
+    def is_content(color: QColor) -> bool:
+        if color.alpha() <= ALPHA_THRESHOLD:
+            return False
+        return not (
+            color.red() >= WHITE_THRESHOLD
+            and color.green() >= WHITE_THRESHOLD
+            and color.blue() >= WHITE_THRESHOLD
+        )
+
+    return _content_bounds(image, is_content)
+
+
+def _content_bounds(image: QImage, is_content: Callable[[QColor], bool]) -> QRect | None:
+    analysis = image
+    if max(image.width(), image.height()) > ANALYSIS_MAX_SIDE:
+        analysis = image.scaled(
+            ANALYSIS_MAX_SIDE,
+            ANALYSIS_MAX_SIDE,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+
+    width = analysis.width()
+    height = analysis.height()
+    if width <= 0 or height <= 0:
+        return None
+
+    left = width
+    top = height
+    right = -1
+    bottom = -1
+    for y in range(height):
+        for x in range(width):
+            if not is_content(analysis.pixelColor(x, y)):
+                continue
+            left = min(left, x)
+            top = min(top, y)
+            right = max(right, x)
+            bottom = max(bottom, y)
+
+    if right < left or bottom < top:
+        return None
+
+    scale_x = image.width() / width
+    scale_y = image.height() / height
+    original_left = max(0, math.floor(left * scale_x))
+    original_top = max(0, math.floor(top * scale_y))
+    original_right = min(image.width() - 1, math.ceil((right + 1) * scale_x) - 1)
+    original_bottom = min(image.height() - 1, math.ceil((bottom + 1) * scale_y) - 1)
+    return QRect(
+        original_left,
+        original_top,
+        original_right - original_left + 1,
+        original_bottom - original_top + 1,
+    )
+
+
+def _is_meaningful_crop(full_rect: QRect, crop_rect: QRect) -> bool:
+    removed_width = full_rect.width() - crop_rect.width()
+    removed_height = full_rect.height() - crop_rect.height()
+    width_threshold = max(12, round(full_rect.width() * 0.08))
+    height_threshold = max(12, round(full_rect.height() * 0.08))
+    return removed_width >= width_threshold or removed_height >= height_threshold
+
+
+def _add_crop_padding(crop_rect: QRect, full_rect: QRect) -> QRect:
+    padding = max(3, min(12, round(min(crop_rect.width(), crop_rect.height()) * 0.025)))
+    return crop_rect.adjusted(-padding, -padding, padding, padding).intersected(full_rect)
+
+
+def _preview_path(source_path: str, crop_rect: QRect) -> Path:
+    try:
+        stat = Path(source_path).stat()
+        signature = (
+            f"{source_path}|{stat.st_mtime_ns}|{stat.st_size}|"
+            f"{crop_rect.x()}:{crop_rect.y()}:{crop_rect.width()}:{crop_rect.height()}"
+        )
+    except OSError:
+        signature = f"{source_path}|{crop_rect.x()}:{crop_rect.y()}:{crop_rect.width()}:{crop_rect.height()}"
+    digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:24]
+    return PREVIEW_DIR / f"{digest}.png"
+
+
 @lru_cache(maxsize=512)
 def _scaled_image_size(path: str) -> tuple[int, int]:
     reader = QImageReader(path)
     size = reader.size()
-    width = size.width()
-    height = size.height()
+    return _scaled_size(size.width(), size.height())
+
+
+def _scaled_size(width: int, height: int) -> tuple[int, int]:
     if width <= 0 or height <= 0:
         return IMAGE_MAX_WIDTH, IMAGE_MAX_HEIGHT
-
     scale = min(IMAGE_MAX_WIDTH / width, IMAGE_MAX_HEIGHT / height, 1.0)
-    scaled_width = max(1, round(width * scale))
-    scaled_height = max(1, round(height * scale))
-    return scaled_width, scaled_height
+    return max(1, round(width * scale)), max(1, round(height * scale))
