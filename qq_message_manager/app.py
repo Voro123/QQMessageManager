@@ -50,6 +50,7 @@ from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
+from .sticker_current_session_guard import install_sticker_current_session_guard
 from .sticker_library_feature import install_sticker_library_feature
 from .sticker_metadata_editor import install_sticker_metadata_editor
 from .sticker_send_reliability import install_sticker_send_reliability
@@ -118,6 +119,8 @@ install_automation_message_buffer(automation_module, ui_module)
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
 install_sticker_send_reliability(ui_module, sticker_module)
+# 只允许当前打开的会话把新收到的表情包写入 AI 表情包记忆库。
+install_sticker_current_session_guard(ui_module)
 install_return_to_login(ui_module)
 # 最小发言间隔必须最后安装，以统一覆盖普通回复、表情包、生图和聊天总结的实际发送路径。
 install_ai_min_speech_interval(
