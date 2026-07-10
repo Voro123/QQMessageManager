@@ -17,7 +17,7 @@ jobs:
         run: python -m pip install "openpyxl>=3.1.5"
       - name: Compile Python sources
         run: python -m compileall -q qq_message_manager main.py
-      - name: Test automation scheduling, storage and real file import
+      - name: Test automation scheduling, storage, import and delivery helpers
         run: |
           python - <<'PY'
           import csv
@@ -30,8 +30,19 @@ jobs:
           from openpyxl import load_workbook
 
           from qq_message_manager.automation_file_import import read_artifact_records
-          from qq_message_manager.automation_models import AutomationTask, next_schedule_time
+          from qq_message_manager.automation_models import (
+              AutomationTask,
+              TRANSFER_AUTO,
+              TRANSFER_LOCAL,
+              TRANSFER_STREAM,
+              next_schedule_time,
+          )
           from qq_message_manager.automation_record_context import install_automation_record_context
+          from qq_message_manager.automation_stage3_reliability import _is_stream_progress
+          from qq_message_manager.automation_stage3_transfer import (
+              _extract_remote_file_path,
+              _resolved_transfer_mode,
+          )
           import qq_message_manager.automation_storage as storage
 
           task = AutomationTask.create_default()
@@ -39,6 +50,18 @@ jobs:
           task.created_at = "2026-01-01T10:17:00"
           task.interval_seconds = 1800
           assert next_schedule_time(task, datetime(2026, 1, 1, 10, 18), include_now=False) == datetime(2026, 1, 1, 10, 47)
+          assert task.file_transfer_mode == TRANSFER_AUTO
+          task.file_transfer_mode = TRANSFER_STREAM
+          restored = AutomationTask.from_dict(task.to_dict())
+          assert restored.file_transfer_mode == TRANSFER_STREAM
+          legacy = AutomationTask.from_dict({"task_id": "legacy", "name": "legacy"})
+          assert legacy.file_transfer_mode == TRANSFER_AUTO
+
+          assert _resolved_transfer_mode(SimpleNamespace(websocket_url="ws://127.0.0.1:3001"), TRANSFER_AUTO) == TRANSFER_LOCAL
+          assert _resolved_transfer_mode(SimpleNamespace(websocket_url="ws://192.168.1.10:3001"), TRANSFER_AUTO) == TRANSFER_STREAM
+          assert _extract_remote_file_path({"data": {"status": "file_complete", "file_path": "/tmp/a.xlsx"}}) == "/tmp/a.xlsx"
+          assert _is_stream_progress({"type": "stream", "data_type": "data_chunk"})
+          assert not _is_stream_progress({"type": "response", "data": {"file_path": "/tmp/a.xlsx"}})
 
           task.file_enabled = True
           task.file_format = "xlsx"
