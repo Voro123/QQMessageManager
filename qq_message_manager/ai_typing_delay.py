@@ -5,10 +5,12 @@ import random
 from typing import Any
 
 from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QCheckBox, QFormLayout
 
 from .models import ChatMessage
 from .sticker_memory import parse_sticker_marker
 
+TYPING_DELAY_SETTINGS_KEY = "ai/typing_delay_enabled"
 MIN_DELAY_CHARS = 18
 MS_PER_CHAR = 110
 MIN_DELAY_MS = 1200
@@ -17,7 +19,9 @@ RANDOM_JITTER_MS = (300, 1200)
 
 
 def install_ai_typing_delay(ui_module: Any) -> None:
-    """给 MainWindow 安装 AI 回复后的模拟打字延迟。"""
+    """给 AI 设置增加开关，并给 MainWindow 安装回复后的模拟打字延迟。"""
+    _install_typing_delay_setting(ui_module)
+
     main_window_cls = ui_module.MainWindow
     if getattr(main_window_cls, "_ai_typing_delay_installed", False):
         return
@@ -55,7 +59,8 @@ def install_ai_typing_delay(ui_module: Any) -> None:
                 self.append_log("AI 代管判断本次不需要回复")
             return
 
-        delay_ms = _ai_typing_delay_ms(reply_text)
+        typing_delay_enabled = _setting_bool(self.settings, TYPING_DELAY_SETTINGS_KEY, False)
+        delay_ms = _ai_typing_delay_ms(reply_text) if typing_delay_enabled else 0
         if delay_ms <= 0:
             _send_ai_reply_payload(self, ui_module, session_id, reply_text, sticker_id, sticker_code)
             return
@@ -71,13 +76,65 @@ def install_ai_typing_delay(ui_module: Any) -> None:
         pending[session_id] = timer
         delay_seconds = math.ceil(delay_ms / 1000)
         self.append_log(f"AI 代管已生成回复，模拟打字 {delay_seconds} 秒后发送")
-        timer.timeout.connect(lambda sid=session_id: _send_delayed_ai_reply(self, ui_module, sid, reply_text, sticker_id, sticker_code))
+        timer.timeout.connect(
+            lambda sid=session_id: _send_delayed_ai_reply(
+                self,
+                ui_module,
+                sid,
+                reply_text,
+                sticker_id,
+                sticker_code,
+            )
+        )
         timer.start(delay_ms)
 
     main_window_cls.disconnect_from_server = disconnect_with_pending_clear
     main_window_cls._clear_all_ai_timers = clear_timers_with_pending_clear
     main_window_cls._handle_ai_reply_ready = handle_ai_reply_ready
     main_window_cls._ai_typing_delay_installed = True
+
+
+def _install_typing_delay_setting(ui_module: Any) -> None:
+    dialog_cls = ui_module.AiSettingsDialog
+    if getattr(dialog_cls, "_typing_delay_setting_installed", False):
+        return
+
+    original_init = dialog_cls.__init__
+    original_accept = dialog_cls.accept
+
+    def init_with_typing_delay_setting(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        self.typing_delay_enabled = QCheckBox("根据文本长度延迟发送")
+        self.typing_delay_enabled.setToolTip("开启后，AI 回复越长，生成完成后等待越久再发送；默认关闭。")
+        self.typing_delay_enabled.setChecked(
+            _setting_bool(self.settings, TYPING_DELAY_SETTINGS_KEY, False)
+        )
+        form = _find_form_layout(self)
+        if form is not None:
+            form.addRow("模拟打字", self.typing_delay_enabled)
+
+    def accept_with_typing_delay_setting(self: Any) -> None:
+        checkbox = getattr(self, "typing_delay_enabled", None)
+        if checkbox is not None:
+            self.settings.setValue(TYPING_DELAY_SETTINGS_KEY, checkbox.isChecked())
+            self.settings.sync()
+        original_accept(self)
+
+    dialog_cls.__init__ = init_with_typing_delay_setting
+    dialog_cls.accept = accept_with_typing_delay_setting
+    dialog_cls._typing_delay_setting_installed = True
+
+
+def _find_form_layout(dialog: Any) -> QFormLayout | None:
+    root_layout = dialog.layout()
+    if root_layout is None:
+        return None
+    for index in range(root_layout.count()):
+        item = root_layout.itemAt(index)
+        layout = item.layout()
+        if isinstance(layout, QFormLayout):
+            return layout
+    return None
 
 
 def _send_delayed_ai_reply(
@@ -172,3 +229,12 @@ def _clear_pending_ai_send_timers(window: Any) -> None:
         timer.deleteLater()
         inflight.discard(session_id)
     pending.clear()
+
+
+def _setting_bool(settings: Any, key: str, default: bool) -> bool:
+    value = settings.value(key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
