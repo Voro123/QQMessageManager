@@ -167,6 +167,9 @@ def _install_upload_confirmation_watchdog(automation_module: Any, feature_module
         active = set(getattr(window, "automation_uploads", {})) | set(
             getattr(window, "automation_test_uploads", {})
         )
+        # 上传重试会直接从重试队列创建上下文，不经过 ready 回调；在这里统一接管。
+        for upload_id in active:
+            starts.setdefault(upload_id, now)
         for upload_id in list(starts):
             if upload_id not in active:
                 starts.pop(upload_id, None)
