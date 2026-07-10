@@ -47,12 +47,28 @@ def install_automation_napcat(napcat_module: Any) -> None:
                 }
             )
             return
+        common_params = {
+            "count": count,
+            # Scheduled analysis only needs message content and metadata. Avoid
+            # resolving old attachment URLs and nested forwards, which can make
+            # NapCat perform additional lookups against expired message records.
+            "disable_get_url": True,
+            "parse_mult_msg": False,
+            "quick_reply": True,
+            "reverse_order": False,
+        }
         if kind == "group":
             action = "get_group_msg_history"
-            params = {"group_id": napcat_module._onebot_id(target_id), "count": count}
+            params = {
+                "group_id": napcat_module._onebot_id(target_id),
+                **common_params,
+            }
         elif kind == "private":
             action = "get_friend_msg_history"
-            params = {"user_id": napcat_module._onebot_id(target_id), "count": count}
+            params = {
+                "user_id": napcat_module._onebot_id(target_id),
+                **common_params,
+            }
         else:
             self.history_messages_received.emit(
                 {
