@@ -52,7 +52,7 @@ def _install_delete_after_send_control(automation_module: Any) -> None:
             getattr(self.task, "delete_after_send", True)
         )
         original_validate(self)
-        if self.result() == int(QDialog.DialogCode.Accepted):
+        if self.result() == QDialog.DialogCode.Accepted:
             # The base dialog historically hard-coded this field to True.
             # Override it only after validation succeeds so the user's choice
             # is what the task manager persists.
@@ -108,7 +108,7 @@ def _install_retained_delivery_archiving(automation_module: Any) -> None:
                 window.append_log(
                     f"定时任务“{task.name}”文件发送成功，旧文件已保留到 {archive_label}"
                 )
-        except OSError as exc:
+        except Exception as exc:  # noqa: BLE001
             # Delivery has already succeeded and the checkpoint has advanced.
             # A retention move failure must be visible, but must not retry or
             # send the same successful archive again.
