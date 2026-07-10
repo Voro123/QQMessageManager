@@ -152,7 +152,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
         return None
 
     text = str(value).strip()
-    if not text:
+    if not text or text in {"0", "0.0"}:
         return None
 
     for pattern, fmt in _COMPACT_TIME_FORMATS:
@@ -186,7 +186,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
         numeric = float(text)
     except ValueError:
         return None
-    if not math.isfinite(numeric):
+    if not math.isfinite(numeric) or numeric == 0:
         return None
 
     absolute = abs(numeric)
@@ -214,9 +214,13 @@ def _to_local_naive(value: datetime) -> datetime:
 
 def _first_present(*values: Any) -> Any:
     for value in values:
-        if value is None:
+        if value is None or isinstance(value, bool):
             continue
-        if isinstance(value, str) and not value.strip():
+        if isinstance(value, (int, float)) and value == 0:
             continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or stripped in {"0", "0.0"}:
+                continue
         return value
     return None
