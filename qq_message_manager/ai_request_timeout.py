@@ -121,6 +121,7 @@ def _install_client_timeout_support(ui_module: Any, ai_module: Any) -> None:
             positional = list(args)
             if len(positional) >= 5:
                 positional[4] = configured
+                kwargs.pop("timeout_seconds", None)
             else:
                 kwargs["timeout_seconds"] = configured
             original_openai_init(self, *positional, **kwargs)
@@ -184,6 +185,13 @@ def _post_json(
     if not isinstance(parsed, dict):
         raise error_type("接口返回格式不是对象")
     return parsed
+
+
+def _is_timeout_reason(reason: Any) -> bool:
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    text = str(reason or "").strip().lower()
+    return "timed out" in text or "timeout" in text or "超时" in text
 
 
 def _apply_runtime_timeout(
