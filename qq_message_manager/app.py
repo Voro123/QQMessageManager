@@ -29,6 +29,7 @@ from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
 from .automation_patches import install_automation_patches
+from .automation_record_context import install_automation_record_context
 from .automation_stage2_ui import install_automation_stage2_ui
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
@@ -69,8 +70,9 @@ install_chat_summary_people_filter_patch(chat_summary_skill_module)
 install_automation_feature(ui_module, ai_module, napcat_module)
 install_automation_patches(automation_module, skill_library_module, ui_module)
 install_automation_hardening(automation_module, ui_module)
-# 第二阶段先安装真实文件读取和用户导入，再让归档层捕获新的读取器。
+# 第二阶段先安装真实文件读取、已有记录优先级和用户导入，再让归档层捕获新的读取器。
 install_automation_file_import(automation_module, automation_storage_module)
+install_automation_record_context(automation_module)
 install_automation_stage2_ui(
     automation_module,
     automation_file_import_module,
