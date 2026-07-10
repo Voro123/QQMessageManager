@@ -17,14 +17,21 @@ jobs:
         run: python -m pip install "openpyxl>=3.1.5"
       - name: Compile Python sources
         run: python -m compileall -q qq_message_manager main.py
-      - name: Test automation scheduling and storage
+      - name: Test automation scheduling, storage and real file import
         run: |
           python - <<'PY'
+          import csv
+          import json
           import tempfile
           from datetime import datetime
           from pathlib import Path
+          from types import SimpleNamespace
 
+          from openpyxl import load_workbook
+
+          from qq_message_manager.automation_file_import import read_artifact_records
           from qq_message_manager.automation_models import AutomationTask, next_schedule_time
+          from qq_message_manager.automation_record_context import install_automation_record_context
           import qq_message_manager.automation_storage as storage
 
           task = AutomationTask.create_default()
@@ -54,7 +61,53 @@ jobs:
                   }],
               )
               assert stats["inserted"] == 1
+              original_id = records[0]["record_id"]
               path = storage.write_artifact(task, datetime(2026, 1, 1).date(), records)
               assert path.is_file()
-              assert storage.load_records(path)[0]["values"]["内容"] == "测试问题"
+
+              workbook = load_workbook(path)
+              sheet = workbook[task.sheet_name]
+              content_column = [cell.value for cell in sheet[1]].index("内容") + 1
+              sheet.cell(row=2, column=content_column, value="外部编辑后的问题")
+              workbook.save(path)
+              workbook.close()
+
+              imported, recognized = read_artifact_records(path, task, storage)
+              assert recognized
+              assert imported[0]["record_id"] == original_id
+              assert imported[0]["values"]["内容"] == "外部编辑后的问题"
+              assert imported[0]["source_message_ids"] == ["message-1"]
+
+              csv_path = Path(temp_dir) / "records.csv"
+              with csv_path.open("w", encoding="utf-8-sig", newline="") as handle:
+                  writer = csv.DictWriter(handle, fieldnames=[column.name for column in task.columns])
+                  writer.writeheader()
+                  writer.writerow({"时间": "2026-01-01 11:00:00", "人员": "甲", "内容": "CSV 问题", "状态": "待处理"})
+              csv_rows, recognized = read_artifact_records(csv_path, task, storage)
+              assert recognized and csv_rows[0]["values"]["内容"] == "CSV 问题"
+
+              json_path = Path(temp_dir) / "records.json"
+              json_path.write_text(json.dumps([{"时间": "2026-01-01 12:00:00", "人员": "乙", "内容": "JSON 问题", "状态": "待处理"}], ensure_ascii=False), encoding="utf-8")
+              json_rows, recognized = read_artifact_records(json_path, task, storage)
+              assert recognized and json_rows[0]["values"]["内容"] == "JSON 问题"
+
+              md_path = Path(temp_dir) / "records.md"
+              md_path.write_text("| 时间 | 人员 | 内容 | 状态 | 处理结果 |\n| --- | --- | --- | --- | --- |\n| 2026-01-01 13:00:00 | 丙 | Markdown 问题 | 待处理 | |\n", encoding="utf-8")
+              md_rows, recognized = read_artifact_records(md_path, task, storage)
+              assert recognized and md_rows[0]["values"]["内容"] == "Markdown 问题"
+
+          fake_module = SimpleNamespace(records_for_ai=lambda records: records)
+          install_automation_record_context(fake_module)
+          many = [
+              {
+                  "record_id": f"row_{index}",
+                  "values": {"内容": f"问题 {index}", "状态": "已完成"},
+                  "source_message_ids": [],
+              }
+              for index in range(600)
+          ]
+          many[0]["values"]["状态"] = "待处理"
+          selected = fake_module.records_for_ai(many)
+          assert any(record["record_id"] == "row_0" for record in selected)
+          assert len(json.dumps(selected, ensure_ascii=False)) <= 25000
           PY
