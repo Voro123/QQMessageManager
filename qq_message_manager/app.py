@@ -27,6 +27,7 @@ from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .automation_archive_patch import install_automation_archive_patch
+from .automation_editor_usability import install_automation_editor_usability
 from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
@@ -100,6 +101,8 @@ install_automation_stage3_reliability(
     automation_stage3_feature_module,
     napcat_module,
 )
+# 目标会话使用可刷新的群聊/好友下拉框；调度方式只显示当前相关字段。
+install_automation_editor_usability(automation_module, napcat_module, ui_module)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
