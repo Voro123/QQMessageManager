@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import shutil
 import threading
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtWidgets import QDialog
 
+GENERATED_SUFFIXES = {".xlsx", ".csv", ".json", ".md"}
+
 
 def install_automation_behavior_fixes(automation_module: Any) -> None:
     """Fix scheduled-task delivery deletion control and empty-message runs."""
 
     _install_delete_after_send_control(automation_module)
+    _install_retained_delivery_archiving(automation_module)
     _install_empty_message_execution(automation_module)
 
 
@@ -25,6 +29,9 @@ def _install_delete_after_send_control(automation_module: Any) -> None:
 
     def init_with_delete_option(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
+        delivery_toggle = getattr(self, "delivery_enabled_input", None)
+        if delivery_toggle is not None:
+            delivery_toggle.setText("每天把当前文件私聊发送")
         checkbox = getattr(self, "delete_after_send_input", None)
         if checkbox is not None:
             checkbox.setChecked(bool(getattr(self.task, "delete_after_send", True)))
@@ -55,6 +62,107 @@ def _install_delete_after_send_control(automation_module: Any) -> None:
     dialog_cls._sync_controls = sync_with_delete_option
     dialog_cls._validate_and_accept = validate_with_delete_option
     dialog_cls._automation_delete_option_fix_installed = True
+
+
+def _install_retained_delivery_archiving(automation_module: Any) -> None:
+    """Keep successfully sent files without merging and resending them later."""
+
+    if getattr(automation_module, "_automation_retained_archive_fix_installed", False):
+        return
+
+    original_handler = automation_module._handle_upload_result
+
+    def handle_with_retained_archive(window: Any, payload: dict[str, Any]) -> None:
+        upload_id = str(payload.get("upload_id") or "")
+        upload = getattr(window, "automation_uploads", {}).get(upload_id)
+        task = (
+            automation_module.task_by_id(
+                getattr(window, "automation_tasks", []),
+                upload.run.task_id,
+            )
+            if upload is not None
+            else None
+        )
+        should_retain = bool(
+            payload.get("ok")
+            and upload is not None
+            and task is not None
+            and not bool(getattr(task, "delete_after_send", True))
+        )
+        retained_path = Path(str(upload.path)).expanduser() if should_retain else None
+        cutoff = upload.run.cutoff if should_retain else None
+
+        original_handler(window, payload)
+
+        if not should_retain or retained_path is None or cutoff is None or task is None:
+            return
+        try:
+            archive_label = _archive_sent_bundles(
+                automation_module,
+                task,
+                retained_path,
+                cutoff,
+                upload_id,
+            )
+            if archive_label:
+                window.append_log(
+                    f"定时任务“{task.name}”文件发送成功，旧文件已保留到 {archive_label}"
+                )
+        except OSError as exc:
+            # Delivery has already succeeded and the checkpoint has advanced.
+            # A retention move failure must be visible, but must not retry or
+            # send the same successful archive again.
+            window.append_log(
+                f"定时任务“{task.name}”文件已发送，但保留旧文件时失败：{exc}"
+            )
+
+    automation_module._handle_upload_result = handle_with_retained_archive
+    automation_module._automation_retained_archive_fix_installed = True
+
+
+def _archive_sent_bundles(
+    automation_module: Any,
+    task: Any,
+    delivered_path: Path,
+    cutoff: Any,
+    upload_id: str,
+) -> str:
+    parent = delivered_path.resolve().parent
+    if not parent.is_dir():
+        return ""
+
+    # The base success handler creates the next active file before returning.
+    # Keep that file in the workspace root and move all previously generated
+    # artifacts into sent/, so the archive merge code will not pick them up on
+    # the next day.
+    active_path = automation_module.artifact_path(task, cutoff.date()).resolve()
+    active_sidecar = Path(str(active_path) + ".records.json")
+    safe_upload_id = "".join(char for char in upload_id if char.isalnum() or char in "_-")[-24:]
+    folder_name = f"{cutoff:%Y-%m-%d_%H%M%S}_{safe_upload_id or 'sent'}"
+    destination = parent / "sent" / folder_name
+
+    candidates: list[Path] = []
+    for item in parent.iterdir():
+        if not item.is_file():
+            continue
+        is_sidecar = item.name.endswith(".records.json")
+        is_artifact = item.suffix.lower() in GENERATED_SUFFIXES
+        if not is_sidecar and not is_artifact:
+            continue
+        resolved = item.resolve()
+        if resolved in {active_path, active_sidecar}:
+            continue
+        candidates.append(item)
+
+    if not candidates:
+        return ""
+    destination.mkdir(parents=True, exist_ok=True)
+    for source in candidates:
+        target = destination / source.name
+        if target.exists():
+            target = destination / f"{source.stem}_{safe_upload_id}{source.suffix}"
+        shutil.move(str(source), str(target))
+    return f"sent/{folder_name}/"
 
 
 def _install_empty_message_execution(automation_module: Any) -> None:
