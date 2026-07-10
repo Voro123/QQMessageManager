@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -105,6 +106,7 @@ def _build_messages(
         "只允许 action=insert 或 action=update；禁止 delete、rename、move、shell、python、路径和接收人操作。"
         "update 必须使用现有记录中的 record_id。"
         "没有需要写入或更新的内容时 operations 返回空数组。"
+        "source_message_ids 必须使用聊天记录中 message_id= 后面的稳定 ID，不得编造。"
         "响应必须是一个 JSON 对象，不要使用 Markdown 代码块，不要输出 JSON 之外的文字。"
         "格式为："
         '{"message":"可选的简短执行结果","operations":['
@@ -202,9 +204,9 @@ def _format_transcript(messages: list[ChatMessage]) -> str:
         text = (message.text or "").strip() or "[空消息]"
         if len(text) > 1500:
             text = text[:1500] + "…"
-        message_id = message.message_id or "无ID"
+        source_id = _stable_source_id(message)
         line = (
-            f"[message_id={message_id}] "
+            f"[message_id={source_id}] "
             f"[{message.timestamp:%Y-%m-%d %H:%M:%S}] "
             f"{message.sender_name}({message.sender_id}): {text}"
         )
@@ -214,6 +216,20 @@ def _format_transcript(messages: list[ChatMessage]) -> str:
         lines.append(line)
         total += len(line)
     return "\n".join(lines)
+
+
+def _stable_source_id(message: ChatMessage) -> str:
+    if message.message_id:
+        return str(message.message_id)
+    raw = "|".join(
+        [
+            message.session_id,
+            message.sender_id,
+            str(int(message.timestamp.timestamp())),
+            message.text or "",
+        ]
+    )
+    return "local_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
 def _load_scheduled_file_skill() -> str:
