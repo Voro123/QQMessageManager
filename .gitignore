@@ -13,3 +13,6 @@ build/
 .env
 .DS_Store
 launch*.log
+*.sqlite3
+automation_workspace/
+.qq_message_manager/
