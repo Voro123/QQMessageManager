@@ -8,11 +8,6 @@ from typing import Any
 # 例如“总结我们最近的聊天记录”应等价于 people=[]，而不是 people=["我们"]。
 NO_FILTER_PERSON_WORDS = {
     "条",
-    "我",
-    "你",
-    "他",
-    "她",
-    "它",
     "我们",
     "咱们",
     "我俩",
