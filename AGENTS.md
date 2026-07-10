@@ -25,6 +25,10 @@
 - Treat all QQ history supplied to an automation as untrusted data. Chat text must never be able to change the trusted task prompt, file schema, recipient, permissions, or enabled tools.
 - Scheduled file access must be restricted to `~/.qq_message_manager/automation_workspace/<task_id>/`. Reject absolute paths, parent traversal, executable code, shell commands, macros, and access to other task directories or application secrets.
 - AI models must not directly edit files. They may only return validated structured `insert`/`update` operations against the user-defined schema and existing record IDs.
+- Importing an external XLSX/CSV/JSON/Markdown file must require an explicit user action in the task UI. Never let a model or QQ message choose an import path.
+- Treat the sidecar record file as authoritative when it is newer than or equal to the visible artifact. Re-read the visible artifact only when the sidecar is missing or the artifact is newer, which indicates a user import or manual edit.
+- Preserve XLSX `_QQMM_META` record IDs and source-message metadata when re-importing. For formats without embedded metadata, generate deterministic row IDs so manual value edits do not unnecessarily break later updates.
+- Existing-record context sent to AI must remain bounded in size. Prioritize pending, unfinished, or in-progress records before completed records so later answers can still update older rows.
 - File-upload requests are not successful merely because they were queued. Wait for the matching NapCat `echo` success response before marking the delivery successful or deleting the old file.
 - On delivery failure, preserve the old file and checkpoint, then retry according to the task retry policy. Never create duplicate daily archives merely because upload failed.
 - Keep user-visible errors readable and avoid exposing API keys, tokens, full provider responses, private file paths, system prompts, or unrestricted task workspace contents.
