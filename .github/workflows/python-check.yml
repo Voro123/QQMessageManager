@@ -1,0 +1,60 @@
+name: Python checks
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install smoke-test dependency
+        run: python -m pip install "openpyxl>=3.1.5"
+      - name: Compile Python sources
+        run: python -m compileall -q qq_message_manager main.py
+      - name: Test automation scheduling and storage
+        run: |
+          python - <<'PY'
+          import tempfile
+          from datetime import datetime
+          from pathlib import Path
+
+          from qq_message_manager.automation_models import AutomationTask, next_schedule_time
+          import qq_message_manager.automation_storage as storage
+
+          task = AutomationTask.create_default()
+          task.name = "CI task"
+          task.created_at = "2026-01-01T10:17:00"
+          task.interval_seconds = 1800
+          assert next_schedule_time(task, datetime(2026, 1, 1, 10, 18), include_now=False) == datetime(2026, 1, 1, 10, 47)
+
+          task.file_enabled = True
+          task.file_format = "xlsx"
+          task.file_name_template = "{date}_records.xlsx"
+          task.dedup_fields = ["内容"]
+          with tempfile.TemporaryDirectory() as temp_dir:
+              storage.AUTOMATION_ROOT = Path(temp_dir)
+              records, stats = storage.apply_operations(
+                  task,
+                  [],
+                  [{
+                      "action": "insert",
+                      "values": {
+                          "时间": "2026-01-01 10:20:00",
+                          "人员": "测试用户",
+                          "内容": "测试问题",
+                          "状态": "待处理",
+                      },
+                      "source_message_ids": ["message-1"],
+                  }],
+              )
+              assert stats["inserted"] == 1
+              path = storage.write_artifact(task, datetime(2026, 1, 1).date(), records)
+              assert path.is_file()
+              assert storage.load_records(path)[0]["values"]["内容"] == "测试问题"
+          PY
