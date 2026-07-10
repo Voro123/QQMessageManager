@@ -47,6 +47,10 @@ class UnsupportedImageModel(RuntimeError):
     pass
 
 
+class ImageGenerationConfigurationError(RuntimeError):
+    pass
+
+
 class ImageGenerationError(RuntimeError):
     pass
 
@@ -151,6 +155,10 @@ def _install_mention_image_generation(ui_module: Any, ai_module: Any) -> None:
         config = ui_module.load_ai_config(self.settings).normalized()
         try:
             backend = _resolve_backend(config, ai_module)
+        except ImageGenerationConfigurationError as exc:
+            _send_requester_text(self, message.session_id, message.sender_id, str(exc))
+            self.append_log(f"图片生成 Skill 未执行：{exc}")
+            return
         except UnsupportedImageModel:
             model_name = _current_model_name(config, ai_module)
             _send_requester_text(
@@ -176,8 +184,12 @@ def _install_mention_image_generation(ui_module: Any, ai_module: Any) -> None:
                     image_path,
                     prompt,
                 )
-            except UnsupportedImageModel as exc:
-                self.image_generation_bridge.failed.emit(message.session_id, message.sender_id, f"UNSUPPORTED:{exc}")
+            except UnsupportedImageModel:
+                self.image_generation_bridge.failed.emit(
+                    message.session_id,
+                    message.sender_id,
+                    f"UNSUPPORTED:{backend.model}",
+                )
             except Exception as exc:  # noqa: BLE001
                 LOGGER.exception("图片生成失败")
                 self.image_generation_bridge.failed.emit(message.session_id, message.sender_id, str(exc))
@@ -232,7 +244,7 @@ def generate_image(backend: ImageGenerationBackend, prompt: str) -> str:
 
 def _resolve_backend(config: Any, ai_module: Any) -> ImageGenerationBackend:
     if not config.api_key:
-        raise UnsupportedImageModel("未配置 API Key")
+        raise ImageGenerationConfigurationError("图片生成未配置 API Key。")
 
     provider = config.provider
     model = _current_model_name(config, ai_module)
@@ -246,7 +258,7 @@ def _resolve_backend(config: Any, ai_module: Any) -> ImageGenerationBackend:
 
     if provider == ai_module.AI_PROVIDER_CUSTOM:
         if not config.base_url:
-            raise UnsupportedImageModel(model)
+            raise ImageGenerationConfigurationError("图片生成未配置 API 地址。")
         root = _api_root(config.base_url)
         if GPT5_MODEL_RE.search(model):
             return ImageGenerationBackend("responses", f"{root}/responses", model, config.api_key)
@@ -484,8 +496,9 @@ def _handle_generated_image(
 def _handle_generation_failure(window: Any, session_id: str, sender_id: str, error: str) -> None:
     window.image_generation_inflight_sessions.discard(session_id)
     if error.startswith("UNSUPPORTED:"):
-        _send_requester_text(window, session_id, sender_id, "当前模型不支持生成图片。")
-        window.append_log("图片生成失败：当前模型或接口不支持图片生成")
+        model_name = error.partition(":")[2] or "当前模型"
+        _send_requester_text(window, session_id, sender_id, f"当前模型（{model_name}）不支持生成图片。")
+        window.append_log(f"图片生成失败：当前模型 {model_name} 或接口不支持图片生成")
         return
     _send_requester_text(window, session_id, sender_id, "图片生成失败，请稍后重试。")
     window.append_log(f"图片生成失败：{error}")
