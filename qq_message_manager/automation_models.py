@@ -16,6 +16,10 @@ OUTPUT_SEND_TEXT = "send_text"
 RECIPIENT_SELF = "self"
 RECIPIENT_CONTACT = "contact"
 RECIPIENT_MANUAL = "manual"
+TRANSFER_AUTO = "auto"
+TRANSFER_LOCAL = "local"
+TRANSFER_STREAM = "stream"
+SUPPORTED_TRANSFER_MODES = (TRANSFER_AUTO, TRANSFER_LOCAL, TRANSFER_STREAM)
 SUPPORTED_FILE_FORMATS = ("xlsx", "csv", "json", "md")
 SCHEDULED_FILE_SKILL_ID = "scheduled_files"
 
@@ -89,6 +93,7 @@ class AutomationTask:
     next_delivery_at: str = ""
     recipient_mode: str = RECIPIENT_SELF
     recipient_qq: str = ""
+    file_transfer_mode: str = TRANSFER_AUTO
     delete_after_send: bool = True
     history_limit: int = 1000
     enabled_skills: list[str] = field(default_factory=list)
@@ -144,6 +149,7 @@ class AutomationTask:
             next_delivery_at=str(raw.get("next_delivery_at") or ""),
             recipient_mode=str(raw.get("recipient_mode") or RECIPIENT_SELF),
             recipient_qq=str(raw.get("recipient_qq") or ""),
+            file_transfer_mode=str(raw.get("file_transfer_mode") or TRANSFER_AUTO),
             delete_after_send=bool(raw.get("delete_after_send", True)),
             history_limit=int(raw.get("history_limit") or 1000),
             enabled_skills=[str(value).strip() for value in raw.get("enabled_skills", []) if str(value).strip()],
@@ -170,6 +176,7 @@ class AutomationTask:
         self.dedup_fields = [name for name in dict.fromkeys(self.dedup_fields) if name in valid_names]
         self.recipient_mode = self.recipient_mode if self.recipient_mode in {RECIPIENT_SELF, RECIPIENT_CONTACT, RECIPIENT_MANUAL} else RECIPIENT_SELF
         self.recipient_qq = re.sub(r"\D", "", self.recipient_qq)[:20]
+        self.file_transfer_mode = self.file_transfer_mode if self.file_transfer_mode in SUPPORTED_TRANSFER_MODES else TRANSFER_AUTO
         self.history_limit = max(20, min(int(self.history_limit), 5000))
         self.enabled_skills = [skill for skill in dict.fromkeys(self.enabled_skills) if skill]
         if self.file_enabled and SCHEDULED_FILE_SKILL_ID not in self.enabled_skills:
