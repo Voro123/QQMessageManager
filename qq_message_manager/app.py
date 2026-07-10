@@ -10,6 +10,7 @@ from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
 from . import automation_feature as automation_module
 from . import automation_file_import as automation_file_import_module
+from . import automation_history_reliability as automation_history_reliability_module
 from . import automation_stage3_feature as automation_stage3_feature_module
 from . import automation_stage3_transfer as automation_stage3_transfer_module
 from . import automation_storage as automation_storage_module
@@ -34,6 +35,7 @@ from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
 from .automation_history_anchor import install_automation_history_anchor
+from .automation_history_cursor_dispatch import install_automation_history_cursor_dispatch
 from .automation_history_reliability import install_automation_history_reliability
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
@@ -116,6 +118,13 @@ install_automation_behavior_fixes(automation_module)
 install_automation_history_reliability(automation_module, napcat_module)
 # 先以最近会话中的最新消息作为历史锚点，再由序号游标筛选真正的增量消息。
 install_automation_history_anchor(automation_module, napcat_module)
+# 最终历史分发不再篡改消息时间；有游标时从上次成功消息向更新方向读取。
+install_automation_history_cursor_dispatch(
+    automation_module,
+    automation_history_reliability_module,
+    napcat_module,
+    ui_module,
+)
 # 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
