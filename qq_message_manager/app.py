@@ -8,10 +8,12 @@ from PySide6.QtWidgets import QApplication
 from . import ai_client as ai_module
 from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
+from . import automation_feature as automation_module
 from . import chat_summary_feature as chat_summary_module
 from . import chat_summary_skill as chat_summary_skill_module
 from . import image_generation_feature as image_generation_module
 from . import napcat_client as napcat_module
+from . import skill_library_feature as skill_library_module
 from . import sticker_library_feature as sticker_library_module
 from . import sticker_memory as sticker_module
 from . import ui as ui_module
@@ -20,6 +22,8 @@ from .ai_min_speech_interval import install_ai_min_speech_interval
 from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
+from .automation_feature import install_automation_feature
+from .automation_patches import install_automation_patches
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .chat_summary_people_patch import install_chat_summary_people_filter_patch
@@ -51,10 +55,13 @@ install_image_generation_toggle(ui_module, image_generation_module, ai_module)
 install_image_generation_model_selector(ui_module, ai_module, image_generation_module)
 # 统一接口超时覆盖聊天、连接测试、总结和生图；保存后会即时更新运行时值。
 install_ai_request_timeout(ui_module, ai_module, image_generation_module)
-# Skill 库统一管理角色和能力；总结 Skill 安装在图片生成触发器之后，避免同一消息重复处理。
+# Skill 库统一管理普通聊天角色和能力；定时文件 Skill 由任务系统单独隔离。
 install_skill_library_feature(ui_module, ai_module)
 install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
 install_chat_summary_people_filter_patch(chat_summary_skill_module)
+# 定时任务系统负责调度、可信任务上下文、受限文件工作区和 NapCat 文件上传。
+install_automation_feature(ui_module, ai_module, napcat_module)
+install_automation_patches(automation_module, skill_library_module, ui_module)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
