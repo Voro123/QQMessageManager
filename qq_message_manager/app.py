@@ -33,6 +33,7 @@ from .automation_editor_usability import install_automation_editor_usability
 from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
+from .automation_history_anchor import install_automation_history_anchor
 from .automation_history_reliability import install_automation_history_reliability
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
@@ -113,6 +114,8 @@ install_automation_editor_init_fix(automation_module)
 install_automation_behavior_fixes(automation_module)
 # 历史消息时间兼容秒/毫秒/微秒/纳秒和 ISO，并输出筛选统计以避免误判新消息。
 install_automation_history_reliability(automation_module, napcat_module)
+# 先以最近会话中的最新消息作为历史锚点，再由序号游标筛选真正的增量消息。
+install_automation_history_anchor(automation_module, napcat_module)
 # 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
