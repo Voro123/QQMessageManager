@@ -10,6 +10,8 @@ from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
 from . import automation_feature as automation_module
 from . import automation_file_import as automation_file_import_module
+from . import automation_stage3_feature as automation_stage3_feature_module
+from . import automation_stage3_transfer as automation_stage3_transfer_module
 from . import automation_storage as automation_storage_module
 from . import chat_summary_feature as chat_summary_module
 from . import chat_summary_skill as chat_summary_skill_module
@@ -32,6 +34,7 @@ from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
 from .automation_stage2_ui import install_automation_stage2_ui
 from .automation_stage3_feature import install_automation_stage3_feature
+from .automation_stage3_reliability import install_automation_stage3_reliability
 from .automation_stage3_transfer import install_automation_stage3_transfer
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
@@ -83,12 +86,19 @@ install_automation_stage2_ui(
     automation_storage_module,
 )
 install_automation_archive_patch(automation_module)
-# 第三阶段最后统一增加发送前校验、测试发送、好友探测和发送记录。
+# 第三阶段统一增加发送前校验、测试发送、好友探测和发送记录。
 install_automation_stage3_feature(
     automation_module,
     automation_file_import_module,
     automation_storage_module,
     ui_module,
+)
+# 最后安装上传确认超时和 Stream 多段响应保护，覆盖第三阶段所有发送入口。
+install_automation_stage3_reliability(
+    automation_module,
+    automation_stage3_transfer_module,
+    automation_stage3_feature_module,
+    napcat_module,
 )
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
