@@ -5,6 +5,7 @@ from typing import Any
 from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -64,6 +65,9 @@ def _install_dialog_editor(library_module: Any) -> None:
     def init_with_metadata_editor(self: Any, *args: Any, **kwargs: Any) -> None:
         original_init(self, *args, **kwargs)
 
+        self.grid_tip.setText(
+            "直接点击缩略图查看详情；可编辑摘要和使用时机；🔒 表示不会被自动替换。"
+        )
         self.summary_edit = QLineEdit(self)
         self.summary_edit.setMaxLength(MAX_STICKER_SUMMARY_LENGTH)
         self.summary_edit.setPlaceholderText("例如：震惊、无语、开心庆祝")
@@ -102,7 +106,7 @@ def _install_dialog_editor(library_module: Any) -> None:
         self.metadata_status_label = QLabel("")
         self.metadata_status_label.setStyleSheet("color:#2e7d32;")
 
-        action_layout = _find_layout_containing(self.layout(), self.lock_button)
+        action_layout = _find_layout_containing_in_dialog(self, self.lock_button)
         if action_layout is not None:
             action_layout.insertWidget(0, self.save_metadata_button)
             action_layout.insertWidget(1, self.metadata_status_label)
@@ -218,7 +222,7 @@ def _replace_form_field(
     new_widget: Any,
     label_text: str,
 ) -> None:
-    row, role = form.getWidgetPosition(old_widget)
+    row, _role = form.getWidgetPosition(old_widget)
     if row < 0:
         return
     label = form.labelForField(old_widget)
@@ -237,15 +241,14 @@ def _find_form_containing(dialog: Any, widget: Any) -> QFormLayout | None:
     return None
 
 
-def _find_layout_containing(layout: Any, widget: Any) -> Any:
-    if layout is None:
-        return None
-    for index in range(layout.count()):
-        item = layout.itemAt(index)
-        if item.widget() is widget:
-            return layout
-        child_layout = item.layout()
-        found = _find_layout_containing(child_layout, widget)
-        if found is not None:
-            return found
+def _find_layout_containing_in_dialog(dialog: Any, widget: Any) -> QLayout | None:
+    candidates: list[QLayout] = []
+    root = dialog.layout()
+    if isinstance(root, QLayout):
+        candidates.append(root)
+    candidates.extend(dialog.findChildren(QLayout))
+    for layout in candidates:
+        for index in range(layout.count()):
+            if layout.itemAt(index).widget() is widget:
+                return layout
     return None
