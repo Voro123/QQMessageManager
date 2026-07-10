@@ -10,8 +10,6 @@ from . import ai_summary as ai_summary_module
 from . import ai_typing_delay as typing_delay_module
 from . import automation_feature as automation_module
 from . import automation_file_import as automation_file_import_module
-from . import automation_history_cursor_dispatch as automation_history_cursor_module
-from . import automation_history_reliability as automation_history_reliability_module
 from . import automation_stage3_feature as automation_stage3_feature_module
 from . import automation_stage3_transfer as automation_stage3_transfer_module
 from . import automation_storage as automation_storage_module
@@ -35,11 +33,7 @@ from .automation_editor_usability import install_automation_editor_usability
 from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
-from .automation_history_anchor import install_automation_history_anchor
-from .automation_history_checkpoint_guard import install_automation_history_checkpoint_guard
-from .automation_history_cursor_dispatch import install_automation_history_cursor_dispatch
-from .automation_history_direction_guard import install_automation_history_direction_guard
-from .automation_history_reliability import install_automation_history_reliability
+from .automation_local_message_log import install_automation_local_message_log
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
 from .automation_stage2_ui import install_automation_stage2_ui
@@ -117,24 +111,13 @@ install_automation_editor_usability(automation_module, napcat_module, ui_module)
 install_automation_editor_init_fix(automation_module)
 # 修复归档删除选项，并确保到点时即使没有新消息也照常执行任务指令。
 install_automation_behavior_fixes(automation_module)
-# 历史消息时间兼容秒/毫秒/微秒/纳秒和 ISO，并输出筛选统计以避免误判新消息。
-install_automation_history_reliability(automation_module, napcat_module)
-# 先以最近会话中的最新消息作为历史锚点，再由序号游标筛选真正的增量消息。
-install_automation_history_anchor(automation_module, napcat_module)
-# 最终历史分发不再篡改消息时间；有游标时从上次成功消息向更新方向读取。
-install_automation_history_cursor_dispatch(
+# 定时任务只读取程序运行期间写入 SQLite 的本地实时消息日志。
+# NapCat 历史时间、消息锚点、real_seq 和查询方向不再参与定时任务主链路。
+install_automation_local_message_log(
     automation_module,
-    automation_history_reliability_module,
-    napcat_module,
+    automation_storage_module,
     ui_module,
 )
-# NapCat 不同版本对 reverse_order 的实际方向不一致；没有更大序号时自动试反方向。
-install_automation_history_direction_guard(
-    automation_history_cursor_module,
-    napcat_module,
-)
-# 空消息成功执行时保留上次 NapCat 消息 ID，避免下一轮丢失游标起点。
-install_automation_history_checkpoint_guard(automation_module)
 # 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
