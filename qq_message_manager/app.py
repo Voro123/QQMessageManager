@@ -11,6 +11,7 @@ from .ai_context_limit_patch import install_ai_context_message_limit
 from .ai_typing_delay import install_ai_typing_delay
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
+from .image_layout_patch import install_image_layout_fix
 from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
 
 
@@ -18,6 +19,7 @@ install_ai_typing_delay(ui_module)
 install_ai_context_message_limit(ui_module)
 install_chat_summary_feature(ui_module, napcat_module)
 install_summary_send_button_swap(ui_module)
+install_image_layout_fix(ui_module)
 
 
 def main() -> int:
