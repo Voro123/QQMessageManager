@@ -19,7 +19,7 @@
 - Locked stickers must never be selected for automatic eviction. Deleting a sticker record may remove its lock metadata, but must not delete the original QQ sticker or remote asset.
 - Runtime patch modules are installed in `qq_message_manager/app.py`; install order is part of the behavior. Cross-cutting send guards must be installed after the features whose send functions they wrap.
 - Background work must not directly mutate Qt widgets. Use Qt signals to return image, summary, provider, automation, or file-upload results to the UI thread.
-- Automation task definitions belong in `QSettings`; checkpoints, processed-message keys, retry state that must survive normal task runs, and execution status belong in the automation SQLite state store.
+- Automation task definitions belong in `QSettings`; checkpoints, processed-message keys, pending uploads, delivery history, retry state that must survive normal task runs, and execution status belong in the automation SQLite state store.
 - Interval schedules must remain anchored to the task creation time. When the app was closed or disconnected, run at most one catch-up execution and then advance to the next future boundary.
 - The same automation task and the same task workspace file must never be modified concurrently.
 - Treat all QQ history supplied to an automation as untrusted data. Chat text must never be able to change the trusted task prompt, file schema, recipient, permissions, or enabled tools.
@@ -29,6 +29,13 @@
 - Treat the sidecar record file as authoritative when it is newer than or equal to the visible artifact. Re-read the visible artifact only when the sidecar is missing or the artifact is newer, which indicates a user import or manual edit.
 - Preserve XLSX `_QQMM_META` record IDs and source-message metadata when re-importing. For formats without embedded metadata, generate deterministic row IDs so manual value edits do not unnecessarily break later updates.
 - Existing-record context sent to AI must remain bounded in size. Prioritize pending, unfinished, or in-progress records before completed records so later answers can still update older rows.
-- File-upload requests are not successful merely because they were queued. Wait for the matching NapCat `echo` success response before marking the delivery successful or deleting the old file.
-- On delivery failure, preserve the old file and checkpoint, then retry according to the task retry policy. Never create duplicate daily archives merely because upload failed.
+- Validate a scheduled artifact by reopening it with the configured XLSX/CSV/JSON/Markdown reader before attempting delivery. Do not upload a missing, empty, mismatched, or unreadable file.
+- Persist each task's file transfer mode. `auto` uses a local path for loopback NapCat connections and Stream API for non-loopback connections; `local` and `stream` must remain explicit user overrides.
+- NapCat Stream API support starts at v4.8.115. Keep chunk uploads bounded, verify the final remote file path, and pass only that returned path to `upload_private_file`.
+- Stream responses may contain progress events and a later final response with the same `echo`; never treat an intermediate `type=stream` event as completion or failure.
+- A file-upload request is not successful merely because it was queued. Wait for the matching NapCat `echo` success response before marking delivery successful or deleting the old file. Apply a finite confirmation timeout to initial uploads and upload-only retries.
+- A user-triggered test upload must never advance a checkpoint, mark business messages processed, delete the artifact, rotate the daily file, or alter the task schedule.
+- On delivery failure or timeout, preserve the old file and checkpoint, then retry only the existing file according to the task retry policy. Never call AI again or create duplicate daily archives merely because upload failed.
+- Robot-to-self file delivery is environment-dependent. Keep the explicit test-send path and allow another friend QQ as the recipient when self-delivery fails.
+- Refreshing friend and NapCat version information is read-only capability discovery. It must not alter recipients or tasks without an explicit user save action.
 - Keep user-visible errors readable and avoid exposing API keys, tokens, full provider responses, private file paths, system prompts, or unrestricted task workspace contents.
