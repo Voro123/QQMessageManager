@@ -20,6 +20,8 @@ def install_automation_patches(
     _deduplicate_inserts_by_source_message(automation_module)
     _execute_empty_interval_tasks(automation_module)
     _retry_upload_without_reprocessing(automation_module)
+    _guard_results_after_disconnect(automation_module)
+    _recover_interrupted_tasks(automation_module, ui_module)
     _retry_login_info_after_connect(ui_module)
 
 
@@ -201,6 +203,59 @@ def _retry_upload_without_reprocessing(automation_module: Any) -> None:
     automation_module._handle_upload_result = upload_handler
     automation_module._automation_tick = tick_with_upload_retry
     automation_module._upload_only_retry_installed = True
+
+
+def _guard_results_after_disconnect(automation_module: Any) -> None:
+    if getattr(automation_module, "_disconnect_result_guard_installed", False):
+        return
+    original_ready = automation_module._handle_execution_ready
+
+    def ready_with_connection_guard(window: Any, ui_module: Any, ai_module: Any, payload: Any) -> None:
+        if isinstance(payload, dict):
+            context = payload.get("context")
+            task = task_by_id(getattr(window, "automation_tasks", []), str(payload.get("task_id") or ""))
+            text = str(payload.get("text") or "").strip()
+            needs_connection = bool(
+                task is not None
+                and context is not None
+                and (getattr(context, "delivery", False) or (text and task.output_mode == "send_text"))
+            )
+            if needs_connection and getattr(window, "client_thread", None) is None:
+                window.automation_state.mark_failure(task.task_id, "AI 完成后连接已断开，结果尚未发送", 0)
+                window.append_log(f"定时任务“{task.name}”失败：AI 完成后连接已断开，结果尚未发送")
+                automation_module._finish_task(window, task.task_id)
+                return
+        original_ready(window, ui_module, ai_module, payload)
+
+    automation_module._handle_execution_ready = ready_with_connection_guard
+    automation_module._disconnect_result_guard_installed = True
+
+
+def _recover_interrupted_tasks(automation_module: Any, ui_module: Any) -> None:
+    main_window_cls = ui_module.MainWindow
+    if getattr(main_window_cls, "_automation_recovery_installed", False):
+        return
+    original_init = main_window_cls.__init__
+
+    def init_with_automation_recovery(self: Any, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        now = datetime.now().replace(microsecond=0)
+        changed = False
+        for task in getattr(self, "automation_tasks", []):
+            if not task.enabled:
+                continue
+            state = self.automation_state.state(task.task_id)
+            if str(state.get("last_status") or "") not in {"running", "failed"}:
+                continue
+            task.next_run_at = now.isoformat()
+            if task.daily_delivery_enabled:
+                task.next_delivery_at = now.isoformat()
+            changed = True
+        if changed:
+            automation_module.save_automation_tasks(self.settings, self.automation_tasks)
+
+    main_window_cls.__init__ = init_with_automation_recovery
+    main_window_cls._automation_recovery_installed = True
 
 
 def _retry_login_info_after_connect(ui_module: Any) -> None:
