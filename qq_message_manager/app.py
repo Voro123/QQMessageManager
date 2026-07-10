@@ -16,6 +16,7 @@ from .ai_typing_delay import install_ai_typing_delay
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .image_generation_feature import install_image_generation_feature
+from .image_generation_model_selector import install_image_generation_model_selector
 from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
@@ -33,9 +34,10 @@ install_summary_send_button_swap(ui_module)
 install_image_layout_fix(ui_module)
 # 视觉输入必须在规则整理和图片裁剪之后安装，确保图片提示及裁剪预览进入最终请求。
 install_vision_input(ui_module, ai_module)
-# 先安装图片生成后端，再用默认关闭的设置开关覆盖旧的“必须 @”触发方式。
+# 先安装图片生成后端和开关，再增加与服务商联动的独立生图模型选择。
 install_image_generation_feature(ui_module, ai_module, napcat_module)
 install_image_generation_toggle(ui_module, image_generation_module, ai_module)
+install_image_generation_model_selector(ui_module, ai_module, image_generation_module)
 # 表情包库使用锁定侧车文件保存状态，并在发送栏中提供管理入口。
 install_sticker_library_feature(ui_module, sticker_module)
 install_return_to_login(ui_module)
