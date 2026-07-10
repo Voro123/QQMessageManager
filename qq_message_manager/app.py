@@ -35,6 +35,7 @@ from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
 from .automation_history_anchor import install_automation_history_anchor
+from .automation_history_checkpoint_guard import install_automation_history_checkpoint_guard
 from .automation_history_cursor_dispatch import install_automation_history_cursor_dispatch
 from .automation_history_reliability import install_automation_history_reliability
 from .automation_patches import install_automation_patches
@@ -125,6 +126,8 @@ install_automation_history_cursor_dispatch(
     napcat_module,
     ui_module,
 )
+# 空消息成功执行时保留上次 NapCat 消息 ID，避免下一轮丢失游标起点。
+install_automation_history_checkpoint_guard(automation_module)
 # 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
