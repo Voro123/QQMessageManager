@@ -17,6 +17,7 @@ from . import sticker_memory as sticker_module
 from . import ui as ui_module
 from .ai_context_limit_patch import install_ai_context_message_limit
 from .ai_min_speech_interval import install_ai_min_speech_interval
+from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .button_position_patch import install_summary_send_button_swap
@@ -48,6 +49,8 @@ install_vision_input(ui_module, ai_module)
 install_image_generation_feature(ui_module, ai_module, napcat_module)
 install_image_generation_toggle(ui_module, image_generation_module, ai_module)
 install_image_generation_model_selector(ui_module, ai_module, image_generation_module)
+# 统一接口超时覆盖聊天、连接测试、总结和生图；保存后会即时更新运行时值。
+install_ai_request_timeout(ui_module, ai_module, image_generation_module)
 # Skill 库统一管理角色和能力；总结 Skill 安装在图片生成触发器之后，避免同一消息重复处理。
 install_skill_library_feature(ui_module, ai_module)
 install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
