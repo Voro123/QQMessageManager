@@ -19,7 +19,7 @@ jobs:
         run: python -m compileall -q qq_message_manager main.py
       - name: Import application patches
         run: python -c "import qq_message_manager.app"
-      - name: Test automation scheduling, local message log, storage, import and delivery helpers
+      - name: Test automation scheduling, message buffer, storage, import and delivery helpers
         run: |
           python - <<'PY'
           import csv
@@ -32,7 +32,7 @@ jobs:
           from openpyxl import load_workbook
 
           from qq_message_manager.automation_file_import import read_artifact_records
-          from qq_message_manager.automation_local_message_log import LocalMessageLogStore
+          from qq_message_manager.automation_message_buffer import AutomationMessageBuffer
           from qq_message_manager.automation_models import (
               AutomationTask,
               TRANSFER_AUTO,
@@ -67,51 +67,74 @@ jobs:
           assert _is_stream_progress({"type": "stream", "data_type": "data_chunk"})
           assert not _is_stream_progress({"type": "response", "data": {"file_path": "/tmp/a.xlsx"}})
 
-          with tempfile.TemporaryDirectory() as temp_dir:
-              log_store = LocalMessageLogStore(Path(temp_dir) / "automation.sqlite3")
-              live = ChatMessage(
-                  session_id="group:123",
-                  session_name="测试群",
-                  session_kind="group",
-                  sender_id="10001",
-                  sender_name="甲",
-                  text="实时问题",
-                  timestamp=datetime(2000, 1, 1, 0, 0, 0),
-                  message_id="message-live-1",
-              )
-              historical = ChatMessage(
-                  session_id="group:123",
-                  session_name="测试群",
-                  session_kind="group",
-                  sender_id="10002",
-                  sender_name="乙",
-                  text="启动历史",
-                  historical=True,
-                  message_id="message-history-1",
-              )
-              scheduled = ChatMessage(
-                  session_id="group:123",
-                  session_name="测试群",
-                  session_kind="group",
-                  sender_id="scheduled_task",
-                  sender_name="定时任务",
-                  text="任务输出",
-                  outgoing=True,
-              )
-              received = datetime(2026, 1, 1, 10, 20, 0, 123456)
-              assert log_store.append(live, received)
-              assert not log_store.append(historical, received)
-              assert not log_store.append(scheduled, received)
-              messages, total = log_store.read_range(
-                  "group:123",
-                  datetime(2026, 1, 1, 10, 19, 0),
-                  datetime(2026, 1, 1, 10, 21, 0),
-                  20,
-              )
-              assert total == 1 and len(messages) == 1
-              assert messages[0].text == "实时问题"
-              assert messages[0].timestamp == received
-              assert messages[0].message_id == "message-live-1"
+          message_buffer = AutomationMessageBuffer()
+          group_first = ChatMessage(
+              session_id="group:123",
+              session_name="测试群",
+              session_kind="group",
+              sender_id="10001",
+              sender_name="甲",
+              text="第一条实时问题",
+              timestamp=datetime(2000, 1, 1),
+              message_id="message-live-1",
+          )
+          private_message = ChatMessage(
+              session_id="private:20001",
+              session_name="好友",
+              session_kind="private",
+              sender_id="20001",
+              sender_name="乙",
+              text="私聊实时消息",
+              message_id="message-private-1",
+          )
+          group_second = ChatMessage(
+              session_id="group:123",
+              session_name="测试群",
+              session_kind="group",
+              sender_id="10002",
+              sender_name="丙",
+              text="第二条实时问题",
+              message_id="message-live-2",
+          )
+          historical = ChatMessage(
+              session_id="group:123",
+              session_name="测试群",
+              session_kind="group",
+              sender_id="10003",
+              sender_name="丁",
+              text="启动历史",
+              historical=True,
+              message_id="message-history-1",
+          )
+          scheduled = ChatMessage(
+              session_id="group:123",
+              session_name="测试群",
+              session_kind="group",
+              sender_id="scheduled_task",
+              sender_name="定时任务",
+              text="任务输出",
+              outgoing=True,
+          )
+          assert message_buffer.record(group_first) == 1
+          assert message_buffer.record(private_message) == 2
+          assert message_buffer.record(group_second) == 3
+          assert message_buffer.record(group_first) is None
+          assert message_buffer.record(historical) is None
+          assert message_buffer.record(scheduled) is None
+
+          group_messages, group_upper, group_total = message_buffer.read_after("group:123", 0, 20)
+          assert group_total == 2 and group_upper == 3
+          assert [message.text for message in group_messages] == ["第一条实时问题", "第二条实时问题"]
+          assert group_messages[0].timestamp.year != 2000
+          assert group_messages[0].raw_event["_qqmm_buffer_sequence"] == 1
+
+          later_messages, later_upper, later_total = message_buffer.read_after("group:123", 1, 20)
+          assert later_total == 1 and later_upper == 3
+          assert later_messages[0].text == "第二条实时问题"
+
+          private_messages, private_upper, private_total = message_buffer.read_after("private:20001", 0, 20)
+          assert private_total == 1 and private_upper == 2
+          assert private_messages[0].text == "私聊实时消息"
 
           task.file_enabled = True
           task.file_format = "xlsx"
