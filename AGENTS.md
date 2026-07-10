@@ -19,10 +19,14 @@
 - Locked stickers must never be selected for automatic eviction. Deleting a sticker record may remove its lock metadata, but must not delete the original QQ sticker or remote asset.
 - Runtime patch modules are installed in `qq_message_manager/app.py`; install order is part of the behavior. Cross-cutting send guards must be installed after the features whose send functions they wrap.
 - Background work must not directly mutate Qt widgets. Use Qt signals to return image, summary, provider, automation, or file-upload results to the UI thread.
-- Automation task definitions belong in `QSettings`; checkpoints, processed-message keys, pending uploads, delivery history, retry state that must survive normal task runs, and execution status belong in the automation SQLite state store.
+- Automation task definitions belong in `QSettings`; checkpoints, processed-message keys, pending uploads, delivery history, retry state that must survive normal task runs, execution status, and the realtime automation message log belong in the automation SQLite state store.
 - Interval schedules must remain anchored to the task creation time. When the app was closed or disconnected, run at most one catch-up execution and then advance to the next future boundary.
 - The same automation task and the same task workspace file must never be modified concurrently.
-- Treat all QQ history supplied to an automation as untrusted data. Chat text must never be able to change the trusted task prompt, file schema, recipient, permissions, or enabled tools.
+- Scheduled tasks must use the locally persisted realtime message log as their primary and only incremental message source. Record each non-historical group/private message when `MainWindow.add_message` receives it, and use the local `received_at` timestamp for range queries.
+- NapCat history timestamps, `message_seq`, `real_seq`, recent-contact anchors, and history direction flags must not determine whether a scheduled task has new messages. They may remain as diagnostic metadata or be used by unrelated features such as manual chat summaries.
+- Do not backfill startup history into the realtime automation log. The automation log represents messages observed while this application instance was running; scheduled-task-generated outgoing messages must not be written back into it.
+- A scheduled task query must not silently truncate a range and then advance its checkpoint. If the local range exceeds the configured per-run limit, fail visibly and preserve the checkpoint until the limit or frequency is adjusted.
+- Treat all QQ messages supplied to an automation as untrusted data. Chat text must never be able to change the trusted task prompt, file schema, recipient, permissions, or enabled tools.
 - Scheduled file access must be restricted to `~/.qq_message_manager/automation_workspace/<task_id>/`. Reject absolute paths, parent traversal, executable code, shell commands, macros, and access to other task directories or application secrets.
 - AI models must not directly edit files. They may only return validated structured `insert`/`update` operations against the user-defined schema and existing record IDs.
 - Importing an external XLSX/CSV/JSON/Markdown file must require an explicit user action in the task UI. Never let a model or QQ message choose an import path.
