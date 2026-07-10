@@ -51,6 +51,7 @@ from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
 from .sticker_library_feature import install_sticker_library_feature
 from .sticker_metadata_editor import install_sticker_metadata_editor
+from .sticker_send_reliability import install_sticker_send_reliability
 from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
 from .vision_input_patch import install_vision_input
 
@@ -109,9 +110,10 @@ install_automation_editor_usability(automation_module, napcat_module, ui_module)
 install_automation_editor_init_fix(automation_module)
 # 修复归档删除选项，并确保到点时即使没有新消息也照常执行任务指令。
 install_automation_behavior_fixes(automation_module)
-# 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
+# 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
+install_sticker_send_reliability(ui_module, sticker_module)
 install_return_to_login(ui_module)
 # 最小发言间隔必须最后安装，以统一覆盖普通回复、表情包、生图和聊天总结的实际发送路径。
 install_ai_min_speech_interval(
