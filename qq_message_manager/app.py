@@ -33,7 +33,7 @@ from .automation_editor_usability import install_automation_editor_usability
 from .automation_feature import install_automation_feature
 from .automation_file_import import install_automation_file_import
 from .automation_hardening import install_automation_hardening
-from .automation_local_message_log import install_automation_local_message_log
+from .automation_message_buffer import install_automation_message_buffer
 from .automation_patches import install_automation_patches
 from .automation_record_context import install_automation_record_context
 from .automation_stage2_ui import install_automation_stage2_ui
@@ -111,13 +111,9 @@ install_automation_editor_usability(automation_module, napcat_module, ui_module)
 install_automation_editor_init_fix(automation_module)
 # 修复归档删除选项，并确保到点时即使没有新消息也照常执行任务指令。
 install_automation_behavior_fixes(automation_module)
-# 定时任务只读取程序运行期间写入 SQLite 的本地实时消息日志。
-# NapCat 历史时间、消息锚点、real_seq 和查询方向不再参与定时任务主链路。
-install_automation_local_message_log(
-    automation_module,
-    automation_storage_module,
-    ui_module,
-)
+# 定时任务直接订阅与界面回显相同的实时消息信号，按会话缓存在内存中。
+# 每个任务使用独立的本地递增序号游标；成功后推进，失败时保持不变。
+install_automation_message_buffer(automation_module, ui_module)
 # 表情包库先提供预览/锁定和摘要编辑，再把普通图片表情固化并用 base64 发送。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
