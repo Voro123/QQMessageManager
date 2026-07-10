@@ -6,6 +6,8 @@ import sys
 from PySide6.QtWidgets import QApplication
 
 from . import ai_client as ai_module
+from . import ai_summary as ai_summary_module
+from . import chat_summary_feature as chat_summary_module
 from . import image_generation_feature as image_generation_module
 from . import napcat_client as napcat_module
 from . import sticker_memory as sticker_module
@@ -15,11 +17,13 @@ from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
+from .chat_summary_skill import install_chat_summary_skill
 from .image_generation_feature import install_image_generation_feature
 from .image_generation_model_selector import install_image_generation_model_selector
 from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
+from .skill_library_feature import install_skill_library_feature
 from .sticker_library_feature import install_sticker_library_feature
 from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
 from .vision_input_patch import install_vision_input
@@ -38,6 +42,9 @@ install_vision_input(ui_module, ai_module)
 install_image_generation_feature(ui_module, ai_module, napcat_module)
 install_image_generation_toggle(ui_module, image_generation_module, ai_module)
 install_image_generation_model_selector(ui_module, ai_module, image_generation_module)
+# Skill 库统一管理角色和能力；总结 Skill 安装在图片生成触发器之后，避免同一消息重复处理。
+install_skill_library_feature(ui_module, ai_module)
+install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
 # 表情包库使用锁定侧车文件保存状态，并在发送栏中提供管理入口。
 install_sticker_library_feature(ui_module, sticker_module)
 install_return_to_login(ui_module)
