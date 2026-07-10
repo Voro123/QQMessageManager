@@ -42,15 +42,19 @@ def install_automation_record_context(automation_module: Any) -> None:
 
     def prioritized_records_for_ai(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
         indexed = list(enumerate(records))
+        open_flags = {
+            index: _record_is_open(record)
+            for index, record in indexed
+        }
         open_records = [
             (index, record)
             for index, record in indexed
-            if _record_is_open(record)
+            if open_flags[index]
         ]
         other_records = [
             (index, record)
             for index, record in indexed
-            if not _record_is_open(record)
+            if not open_flags[index]
         ]
         ordered = [
             *sorted(open_records, key=lambda item: item[0], reverse=True),
@@ -99,9 +103,12 @@ def _record_is_open(record: dict[str, Any]) -> bool:
     if not statuses:
         return False
     combined = " ".join(statuses)
+    # “未完成”“待解决”等同时包含关闭词和开放词，开放状态必须优先。
+    if any(word.lower() in combined for word in OPEN_STATUS_WORDS):
+        return True
     if any(word.lower() in combined for word in CLOSED_STATUS_WORDS):
         return False
-    return any(word.lower() in combined for word in OPEN_STATUS_WORDS) or not combined.strip()
+    return not combined.strip()
 
 
 def _compact_record(record: dict[str, Any]) -> dict[str, Any]:
