@@ -27,6 +27,7 @@ from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .automation_archive_patch import install_automation_archive_patch
+from .automation_behavior_fixes import install_automation_behavior_fixes
 from .automation_editor_init_fix import install_automation_editor_init_fix
 from .automation_editor_usability import install_automation_editor_usability
 from .automation_feature import install_automation_feature
@@ -106,6 +107,8 @@ install_automation_stage3_reliability(
 install_automation_editor_usability(automation_module, napcat_module, ui_module)
 # 基础构造函数会在扩展控件创建前调用 _sync_controls，必须最后增加初始化保护。
 install_automation_editor_init_fix(automation_module)
+# 修复归档删除选项，并确保到点时即使没有新消息也照常执行任务指令。
+install_automation_behavior_fixes(automation_module)
 # 表情包库先提供预览/锁定能力，再增加摘要和使用时机编辑。
 install_sticker_library_feature(ui_module, sticker_module)
 install_sticker_metadata_editor(sticker_module, sticker_library_module)
