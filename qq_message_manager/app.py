@@ -13,6 +13,7 @@ from .ai_rules_cleanup import install_ai_rules_cleanup
 from .ai_typing_delay import install_ai_typing_delay
 from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
+from .image_generation_feature import install_image_generation_feature
 from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
 from .ui import QQMessageManagerApp, SETTINGS_APPLICATION, SETTINGS_ORGANIZATION
@@ -28,6 +29,8 @@ install_summary_send_button_swap(ui_module)
 install_image_layout_fix(ui_module)
 # 视觉输入必须在规则整理和图片裁剪之后安装，确保图片提示及裁剪预览进入最终请求。
 install_vision_input(ui_module, ai_module)
+# 图片生成只在“被 @ + 明确画图请求”时接管消息，并复用 NapCat 消息段发送生成结果。
+install_image_generation_feature(ui_module, ai_module, napcat_module)
 install_return_to_login(ui_module)
 
 
