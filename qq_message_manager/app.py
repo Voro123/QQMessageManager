@@ -47,6 +47,7 @@ from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .chat_summary_people_patch import install_chat_summary_people_filter_patch
 from .chat_summary_skill import install_chat_summary_skill
+from .folder_access_codebase_tools import install_folder_access_codebase_tools
 from .folder_access_feature import install_folder_access_feature
 from .folder_access_unrestricted_types import install_folder_access_unrestricted_types
 from .image_generation_feature import install_image_generation_feature
@@ -83,6 +84,12 @@ install_skill_library_feature(ui_module, ai_module)
 install_folder_access_feature(ui_module, ai_module, skill_library_module)
 # 文件夹权限不再按扩展名限制；同时兼容模型在严格 JSON 外添加无害包装文本。
 install_folder_access_unrestricted_types(
+    folder_access_agent_module,
+    folder_access_service_module,
+    folder_access_feature_module,
+)
+# 在同一受控权限域中增加目录树、文件定位、代码检索、符号定位和分段读取。
+install_folder_access_codebase_tools(
     folder_access_agent_module,
     folder_access_service_module,
     folder_access_feature_module,
