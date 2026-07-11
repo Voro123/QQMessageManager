@@ -410,6 +410,29 @@ class StickerLibraryDialog(QDialog):
         if generation != self.thumbnail_generation:
             return
         item = self.item_by_id.get(sticker_id)
+        record = self.memory.get(sticker_id)
+        if record is not None and not self.memory.is_locked(sticker_id):
+            # A record without a decodable local/remote image is not a usable
+            # sticker.  Remove old bad entries as they are discovered, while
+            # preserving the explicit no-eviction guarantee for locked ones.
+            self.memory.delete_record(sticker_id)
+            self.preview_paths.pop(sticker_id, None)
+            self.item_by_id.pop(sticker_id, None)
+            if item is not None:
+                row = self.list_widget.row(item)
+                self.list_widget.takeItem(row)
+            if sticker_id == self.current_sticker_id:
+                self.current_sticker_id = ""
+                if self.list_widget.count():
+                    self.list_widget.setCurrentRow(0)
+                else:
+                    self._clear_details("当前还没有记忆任何表情包")
+            records = self.memory.all_records()
+            locked_count = sum(1 for current in records if self.memory.is_locked(current.id))
+            self.count_label.setText(
+                f"已记录 {len(records)} / {self.memory.limit} 个表情包，其中锁定 {locked_count} 个"
+            )
+            return
         if item is not None:
             item.setToolTip(item.toolTip() + "\n预览：无法读取")
         if sticker_id == self.current_sticker_id:

@@ -8,6 +8,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtGui import QImage
+
 from .models import ChatImage
 
 IMAGE_CACHE_DIR = Path(tempfile.gettempdir()) / "QQMessageManager" / "image_cache"
@@ -73,7 +75,7 @@ def ensure_cached(
     """
     cache_dir = get_image_cache_dir()
     dest = cache_dir / _cache_filename(img)
-    if dest.exists() and 0 < dest.stat().st_size <= max_bytes:
+    if _valid_image_file(dest, max_bytes):
         img.local_path = str(dest)
         return str(dest)
 
@@ -82,7 +84,7 @@ def ensure_cached(
             data = base64.b64decode(img.file[len("base64://"):].strip())
         except Exception:  # noqa: BLE001
             return None
-        if len(data) > max_bytes:
+        if not _valid_image_bytes(data, max_bytes):
             return None
         dest.write_bytes(data)
         img.local_path = str(dest)
@@ -93,7 +95,7 @@ def ensure_cached(
             data = Path(img.path).read_bytes()
         except Exception:  # noqa: BLE001
             return None
-        if 0 < len(data) <= max_bytes and supported_format(img.path):
+        if supported_format(img.path) and _valid_image_bytes(data, max_bytes):
             dest.write_bytes(data)
             img.local_path = str(dest)
             return str(dest)
@@ -123,10 +125,39 @@ def _download_to_cache(
             data = response.read(max_bytes + 1)
     except Exception:  # noqa: BLE001
         return None
-    if len(data) > max_bytes:
+    if not _valid_image_bytes(data, max_bytes):
         return None
     dest.write_bytes(data)
     return str(dest)
+
+
+def _valid_image_file(path: Path, max_bytes: int) -> bool:
+    try:
+        size = path.stat().st_size
+        if not 0 < size <= max_bytes:
+            return False
+        data = path.read_bytes()
+    except OSError:
+        return False
+    return _valid_image_bytes(data, max_bytes)
+
+
+def _valid_image_bytes(data: bytes, max_bytes: int) -> bool:
+    return bool(
+        0 < len(data) <= max_bytes
+        and _has_supported_image_signature(data[:16])
+        and not QImage.fromData(data).isNull()
+    )
+
+
+def _has_supported_image_signature(header: bytes) -> bool:
+    """Reject empty/error-response bodies before they enter the image cache."""
+    return bool(
+        header.startswith(b"\xff\xd8\xff")
+        or header.startswith(b"\x89PNG\r\n\x1a\n")
+        or header.startswith((b"GIF87a", b"GIF89a"))
+        or (len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP")
+    )
 
 
 def to_data_uri(local_path: str) -> str | None:

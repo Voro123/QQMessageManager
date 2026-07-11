@@ -6,6 +6,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from PySide6.QtGui import QImageReader
+
 from .image_cache import MAX_IMAGE_BYTES, SUPPORTED_EXTENSIONS, ensure_cached
 from .models import ChatImage
 
@@ -67,12 +69,15 @@ def _install_background_sticker_cache(sticker_module: Any) -> None:
     original_load = memory_cls.load
 
     def remember_and_cache(self: Any, event: dict[str, Any]) -> int:
+        before = set(getattr(self, "records", {}))
         count = original_remember(self, event)
-        _schedule_cache_records(self, _ACTIVE_TOKEN)
+        added_ids = set(getattr(self, "records", {})) - before
+        _schedule_cache_records(self, _ACTIVE_TOKEN, discard_on_failure=added_ids)
         return count
 
     def load_and_cache(self: Any) -> None:
         original_load(self)
+        _discard_unusable_persisted_records(self)
         _schedule_cache_records(self, _ACTIVE_TOKEN)
 
     memory_cls.remember_from_event = remember_and_cache
@@ -117,7 +122,12 @@ def _install_cached_cq_resolver(sticker_module: Any) -> None:
     record_cls._cached_sticker_send_installed = True
 
 
-def _schedule_cache_records(memory: Any, token: str) -> None:
+def _schedule_cache_records(
+    memory: Any,
+    token: str,
+    discard_on_failure: set[str] | None = None,
+) -> None:
+    discard_ids = discard_on_failure or set()
     records = list(getattr(memory, "records", {}).values())
     for record in records:
         sticker_id = str(getattr(record, "id", "") or "")
@@ -129,18 +139,25 @@ def _schedule_cache_records(memory: Any, token: str) -> None:
             _CACHE_INFLIGHT.add(sticker_id)
         threading.Thread(
             target=_cache_record_worker,
-            args=(memory, sticker_id, token),
+            args=(memory, sticker_id, token, sticker_id in discard_ids),
             daemon=True,
         ).start()
 
 
-def _cache_record_worker(memory: Any, sticker_id: str, token: str) -> None:
+def _cache_record_worker(
+    memory: Any,
+    sticker_id: str,
+    token: str,
+    discard_on_failure: bool = False,
+) -> None:
     try:
         record = memory.get(sticker_id)
         if record is None or _has_complete_mface(record):
             return
         source = _resolve_local_image(record, token)
         if not source:
+            if discard_on_failure:
+                _discard_invalid_record(memory, sticker_id)
             return
         destination = _durable_destination(memory, record, source)
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -172,7 +189,8 @@ def _resolve_local_image(record: Any, token: str) -> str:
         file_id=str(getattr(record, "file_id", "") or ""),
         file_unique=str(getattr(record, "file_unique", "") or ""),
     )
-    return str(ensure_cached(image, token=token, max_bytes=MAX_STICKER_SEND_BYTES) or "")
+    local_path = str(ensure_cached(image, token=token, max_bytes=MAX_STICKER_SEND_BYTES) or "")
+    return local_path if _is_readable_image(local_path) else ""
 
 
 def _durable_path(record: Any) -> str:
@@ -181,7 +199,11 @@ def _durable_path(record: Any) -> str:
         return ""
     path = Path(raw).expanduser()
     try:
-        valid = path.is_file() and 0 < path.stat().st_size <= MAX_STICKER_SEND_BYTES
+        valid = (
+            path.is_file()
+            and 0 < path.stat().st_size <= MAX_STICKER_SEND_BYTES
+            and _is_readable_image(str(path))
+        )
     except OSError:
         return ""
     return str(path) if valid else ""
@@ -204,3 +226,56 @@ def _has_complete_mface(record: Any) -> bool:
         and str(getattr(record, "emoji_package_id", "") or "")
         and str(getattr(record, "key", "") or "")
     )
+
+
+def _is_readable_image(path: str) -> bool:
+    if not path:
+        return False
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    return not reader.read().isNull()
+
+
+def _discard_invalid_record(memory: Any, sticker_id: str) -> None:
+    """Undo a newly remembered record when no real image can be obtained."""
+    try:
+        with _CACHE_LOCK:
+            if getattr(memory, "is_locked", lambda _id: False)(sticker_id):
+                return
+            delete_record = getattr(memory, "delete_record", None)
+            if callable(delete_record):
+                delete_record(sticker_id)
+                return
+            records = getattr(memory, "records", {})
+            if records.pop(sticker_id, None) is not None:
+                memory.save()
+    except Exception:  # noqa: BLE001 - validation must not break message intake
+        return
+
+
+def _discard_unusable_persisted_records(memory: Any) -> int:
+    """Drop legacy blank entries immediately instead of waiting for URL timeouts.
+
+    New image stickers are copied to the durable sticker cache after they are
+    received.  Therefore an unlocked record that is still missing a decodable
+    local image on a later load is an incomplete/failed record, not a usable
+    library item.  Locked records retain their explicit no-eviction guarantee.
+    """
+    removed = 0
+    try:
+        with _CACHE_LOCK:
+            records = getattr(memory, "records", {})
+            invalid_ids = [
+                sticker_id
+                for sticker_id, record in list(records.items())
+                if not getattr(memory, "is_locked", lambda _id: False)(sticker_id)
+                and not _durable_path(record)
+            ]
+            for sticker_id in invalid_ids:
+                if records.pop(sticker_id, None) is not None:
+                    removed += 1
+            if removed:
+                memory.save()
+    except Exception:  # noqa: BLE001 - bad legacy data must not block startup
+        return 0
+    return removed
