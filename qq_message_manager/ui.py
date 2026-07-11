@@ -365,6 +365,7 @@ class MainWindow(QMainWindow):
         self.client_thread: NapCatClientThread | None = None
         self.sessions: dict[str, ChatSession] = {}
         self.messages: dict[str, list[ChatMessage]] = defaultdict(list)
+        self.latest_realtime_inbound_messages: dict[str, ChatMessage] = {}
         self.session_items: dict[str, QListWidgetItem] = {}
         self.seen_message_keys: set[str] = set()
         self.current_session_id: str | None = None
@@ -517,14 +518,20 @@ class MainWindow(QMainWindow):
         if not message.historical and not message.outgoing and self.current_session_id != message.session_id:
             session.unread_count += 1
         if not message.historical and not message.outgoing:
+            self.latest_realtime_inbound_messages[message.session_id] = message
             self.last_non_self_message_time[message.session_id] = datetime.now()
+            folder_confirmation_consumed = False
+            folder_controller = getattr(self, "folder_access_controller", None)
+            if folder_controller is not None:
+                folder_confirmation_consumed = bool(folder_controller.consume_confirmation(message))
             config = load_ai_config(self.settings).normalized()
             if config.remember_stickers_enabled:
                 added = self.sticker_memory.remember_from_event(message.raw_event)
                 if added:
                     self.append_log(f"已记忆 {added} 个表情包（最多 50 个，超过后自动淘汰最少使用）")
-            self._maybe_schedule_mention_reply(message)
-            self._schedule_after_non_self_message_ai_reply(message.session_id)
+            if not folder_confirmation_consumed:
+                self._maybe_schedule_mention_reply(message)
+                self._schedule_after_non_self_message_ai_reply(message.session_id)
         self._refresh_session_item(item, session)
         self._sort_sessions()
 
@@ -733,7 +740,15 @@ class MainWindow(QMainWindow):
         if session_id in self.ai_inflight_sessions:
             return
         config = load_ai_config(self.settings).normalized()
-        if not config.api_key:
+        latest_message = self.latest_realtime_inbound_messages.get(session_id)
+        folder_controller = getattr(self, "folder_access_controller", None)
+        folder_route = (
+            folder_controller.route(latest_message)
+            if folder_controller is not None and latest_message is not None
+            else None
+        )
+        folder_reply_without_model = bool(folder_route and getattr(folder_route, "immediate_reply", ""))
+        if not config.api_key and not folder_reply_without_model:
             self.append_log("AI 代管未配置 API Key，已跳过自动回复")
             return
         if config.prevent_self_follow_enabled and self._last_speaker_is_self(session_id):
@@ -755,13 +770,16 @@ class MainWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                reply = generate_ai_reply(
-                    config,
-                    session_name=session.name,
-                    session_kind=session.kind,
-                    context_messages=context,
-                    sticker_options=sticker_options,
-                )
+                if folder_route is not None:
+                    reply = folder_controller.generate(config, latest_message, folder_route)
+                else:
+                    reply = generate_ai_reply(
+                        config,
+                        session_name=session.name,
+                        session_kind=session.kind,
+                        context_messages=context,
+                        sticker_options=sticker_options,
+                    )
                 self.ai_reply_ready.emit(session_id, reply)
             except Exception as exc:  # noqa: BLE001
                 self.ai_reply_failed.emit(session_id, f"AI 代管回复失败：{exc}")

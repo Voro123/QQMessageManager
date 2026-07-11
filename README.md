@@ -2,6 +2,8 @@
 
 QQMessageManager 是一个基于 Python / PySide6 的 QQ 消息统一管理客户端。程序通过 NapCatQQ 的 OneBot 正向 WebSocket 接收和发送群聊、私聊消息，并提供会话管理、AI 代管、Skill 库、聊天总结、图片理解与生成、表情包记忆和定时任务工作流。
 
+受控文件夹访问的配置、安全边界、支持工具和写入确认流程见 [docs/folder_access.md](docs/folder_access.md)。
+
 ## 当前功能
 
 - 登录页配置并缓存 NapCatQQ 正向 WebSocket 地址和 Token。

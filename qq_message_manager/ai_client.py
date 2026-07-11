@@ -494,6 +494,63 @@ def _resolve_endpoint_and_model(config: AiReplyConfig) -> tuple[str, str]:
     return endpoint, model
 
 
+def generate_raw_completion(
+    config: AiReplyConfig,
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    """Call the configured provider without applying QQ reply cleanup."""
+    normalized = config.normalized()
+    if not isinstance(messages, list) or not messages:
+        raise AiProviderError("消息列表不能为空")
+    if normalized.provider == AI_PROVIDER_MINIMAX_M3:
+        client = MinimaxM3Client(normalized.api_key)
+        if not client.api_key:
+            raise AiProviderError("缺少 Minimax API Key")
+        payload = {
+            "model": AI_MODEL_MINIMAX_M3,
+            "messages": messages,
+            "temperature": float(temperature),
+            "stream": False,
+            "max_completion_tokens": max(1, int(max_tokens)),
+            "thinking": {"type": "disabled"},
+            "reasoning_split": False,
+        }
+        for endpoint in client.endpoints:
+            try:
+                reply = _extract_reply_text(client._post_json(endpoint, payload))
+                if reply:
+                    return reply
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("MiniMax-M3 completion failed: %s", exc)
+        raise AiProviderError("MiniMax-M3 调用失败，请检查模型配置和网络连接。")
+
+    endpoint, model = _resolve_endpoint_and_model(normalized)
+    client = OpenAICompatibleClient(api_key=normalized.api_key, endpoint=endpoint, model=model)
+    if not client.api_key:
+        raise AiProviderError("缺少 API Key")
+    if not client.endpoint or not client.model:
+        raise AiProviderError("缺少 API 地址或模型名称")
+    payload = {
+        "model": client.model,
+        "messages": messages,
+        "temperature": float(temperature),
+        "stream": False,
+        "max_tokens": max(1, int(max_tokens)),
+    }
+    try:
+        response = client._post_json(client.endpoint, payload)
+    except Exception as exc:
+        LOGGER.warning("AI completion failed: %s", exc)
+        raise AiProviderError("AI 接口调用失败，请检查模型配置和网络连接。") from exc
+    reply = _extract_reply_text(response)
+    if not reply:
+        raise AiProviderError("接口响应中没有可用文本")
+    return reply
+
+
 def generate_ai_reply(
     config: AiReplyConfig,
     *,
@@ -505,33 +562,31 @@ def generate_ai_reply(
     normalized = config.normalized()
     trimmed_context = context_messages[-normalized.context_message_count :]
     active_stickers = sticker_options if normalized.allow_sticker_send_enabled else None
-    if normalized.provider == AI_PROVIDER_MINIMAX_M3:
-        client = MinimaxM3Client(normalized.api_key)
-        return client.generate_reply(
-            session_name=session_name,
-            session_kind=session_kind,
-            known_prompt=normalized.prompt,
-            selected_skill=normalized.selected_skill,
-            allow_ai_skip=normalized.allow_ai_skip_enabled,
-            context_messages=trimmed_context,
-            allow_image_read_enabled=normalized.allow_image_read_enabled,
-            allow_sticker_send_enabled=normalized.allow_sticker_send_enabled,
-            sticker_options=active_stickers,
-        )
-
-    endpoint, model = _resolve_endpoint_and_model(normalized)
-    client = OpenAICompatibleClient(api_key=normalized.api_key, endpoint=endpoint, model=model)
-    return client.generate_reply(
-        session_name=session_name,
-        session_kind=session_kind,
-        known_prompt=normalized.prompt,
-        selected_skill=normalized.selected_skill,
-        allow_ai_skip=normalized.allow_ai_skip_enabled,
-        context_messages=trimmed_context,
-        allow_image_read_enabled=normalized.allow_image_read_enabled,
+    allow_images = normalized.allow_image_read_enabled
+    if (
+        normalized.provider == AI_PROVIDER_MINIMAX_M3
+        and allow_images
+        and not getattr(MinimaxM3Client, "_vision_attempt_installed", False)
+    ):
+        LOGGER.warning("当前 MiniMax 配置未启用多模态尝试，已降级为纯文本回复。")
+        allow_images = False
+    messages = build_chat_messages(
+        session_name,
+        session_kind,
+        normalized.prompt,
+        normalized.selected_skill,
+        normalized.allow_ai_skip_enabled,
+        trimmed_context,
+        allow_image_read_enabled=allow_images,
         allow_sticker_send_enabled=normalized.allow_sticker_send_enabled,
         sticker_options=active_stickers,
     )
+    max_tokens = 256 if normalized.provider == AI_PROVIDER_MINIMAX_M3 else 1024
+    raw = generate_raw_completion(normalized, messages, max_tokens=max_tokens, temperature=0.8)
+    cleaned = _clean_reply(raw)
+    if cleaned or _is_no_reply(raw):
+        return cleaned
+    raise AiProviderError("接口响应中没有可用文本")
 
 
 def test_ai_connection(config: AiReplyConfig) -> tuple[bool, str]:

@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -24,8 +26,10 @@ ENABLED_SKILLS_KEY = "ai/enabled_skills"
 SUMMARY_SKILL_ID = "chat_summary"
 VISION_SKILL_ID = "vision"
 IMAGE_GENERATION_SKILL_ID = "image_generation"
-FUNCTIONAL_SKILL_IDS = {SUMMARY_SKILL_ID, VISION_SKILL_ID, IMAGE_GENERATION_SKILL_ID}
+FOLDER_ACCESS_SKILL_ID = "folder_access"
+FUNCTIONAL_SKILL_IDS = {SUMMARY_SKILL_ID, VISION_SKILL_ID, IMAGE_GENERATION_SKILL_ID, FOLDER_ACCESS_SKILL_ID}
 DEFAULT_ENABLED_SKILLS = {SUMMARY_SKILL_ID}
+SETTINGS_ICON_PATH = Path(__file__).resolve().parent / "images" / "setting.svg"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +67,13 @@ BUILTIN_SKILLS = (
         "聊天总结",
         "能力 Skill",
         "总结当前群聊或私聊最近指定数量的消息；默认 200 条，并把总结直接发送出去。",
+        functional=True,
+    ),
+    SkillDefinition(
+        FOLDER_ACCESS_SKILL_ID,
+        "受控文件夹访问",
+        "能力 Skill",
+        "按关联名和可信 QQ 权限读取或写入用户明确授权的本地文件夹。",
         functional=True,
     ),
 )
@@ -177,6 +188,7 @@ def _open_skill_library(dialog: Any, ai_module: Any) -> None:
     library = SkillLibraryDialog(
         available_skills(ai_module),
         set(getattr(dialog, "pending_enabled_skills", set())),
+        dict(getattr(dialog, "skill_configuration_callbacks", {})),
         dialog,
     )
     if library.exec() != QDialog.DialogCode.Accepted:
@@ -301,10 +313,13 @@ class SkillLibraryDialog(QDialog):
         self,
         definitions: list[SkillDefinition],
         selected: set[str],
+        configuration_callbacks: dict[str, Callable[[QWidget], None]] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.definitions = definitions
+        self.configuration_callbacks = configuration_callbacks or {}
+        self.skill_checkboxes: dict[str, QCheckBox] = {}
         self.setWindowTitle("Skill 库")
         self.resize(720, 560)
         self.setMinimumSize(620, 460)
@@ -321,16 +336,51 @@ class SkillLibraryDialog(QDialog):
         self.list_widget = QListWidget()
         self.list_widget.setSpacing(6)
         for definition in definitions:
-            item = QListWidgetItem(
-                f"{definition.name}  ·  {definition.category}\n{definition.description}"
-            )
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, definition.skill_id)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(
-                Qt.CheckState.Checked if definition.skill_id in selected else Qt.CheckState.Unchecked
-            )
             item.setToolTip(str((Path(__file__).resolve().parent / "skills" / definition.skill_id / "SKILL.md")))
+            item.setSizeHint(QSize(0, 92))
             self.list_widget.addItem(item)
+
+            row = QWidget(self.list_widget)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(8, 6, 8, 6)
+            row_layout.setSpacing(10)
+
+            checkbox = QCheckBox(row)
+            checkbox.setChecked(definition.skill_id in selected)
+            checkbox.setToolTip(f"加载或停用 {definition.name}")
+            self.skill_checkboxes[definition.skill_id] = checkbox
+
+            description = QLabel(
+                f"{definition.name}  ·  {definition.category}\n{definition.description}",
+                row,
+            )
+            description.setWordWrap(True)
+            description.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+
+            row_layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignVCenter)
+            row_layout.addWidget(description, 1)
+
+            callback = self.configuration_callbacks.get(definition.skill_id)
+            if callback is not None:
+                settings_button = QPushButton(row)
+                settings_button.setObjectName(f"skillSettingsButton_{definition.skill_id}")
+                settings_button.setFixedSize(36, 36)
+                settings_button.setIcon(QIcon(str(SETTINGS_ICON_PATH)))
+                settings_button.setIconSize(QSize(20, 20))
+                settings_button.setToolTip(f"设置 {definition.name}")
+                settings_button.setAccessibleName(f"设置 {definition.name}")
+                settings_button.clicked.connect(
+                    lambda _checked=False, skill_id=definition.skill_id: self._configure_skill(skill_id)
+                )
+                row_layout.addWidget(settings_button, 0, Qt.AlignmentFlag.AlignVCenter)
+            else:
+                placeholder = QWidget(row)
+                placeholder.setFixedWidth(36)
+                row_layout.addWidget(placeholder)
+
+            self.list_widget.setItemWidget(item, row)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -345,14 +395,16 @@ class SkillLibraryDialog(QDialog):
         layout.addWidget(buttons)
 
     def selected_skill_ids(self) -> set[str]:
-        selected: set[str] = set()
-        for index in range(self.list_widget.count()):
-            item = self.list_widget.item(index)
-            if item.checkState() == Qt.CheckState.Checked:
-                skill_id = str(item.data(Qt.ItemDataRole.UserRole) or "").strip()
-                if skill_id:
-                    selected.add(skill_id)
-        return selected
+        return {
+            skill_id
+            for skill_id, checkbox in self.skill_checkboxes.items()
+            if checkbox.isChecked()
+        }
+
+    def _configure_skill(self, skill_id: str) -> None:
+        callback = self.configuration_callbacks.get(skill_id)
+        if callback is not None:
+            callback(self)
 
 
 def _find_group_form(dialog: Any, title: str) -> QFormLayout | None:

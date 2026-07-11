@@ -48,6 +48,7 @@ from .image_generation_feature import install_image_generation_feature
 from .image_generation_model_selector import install_image_generation_model_selector
 from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
+from .folder_access_feature import install_folder_access_feature
 from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
 from .sticker_current_session_guard import install_sticker_current_session_guard
@@ -75,6 +76,7 @@ install_image_generation_model_selector(ui_module, ai_module, image_generation_m
 install_ai_request_timeout(ui_module, ai_module, image_generation_module)
 # Skill 库统一管理普通聊天角色和能力；定时文件 Skill 由任务系统单独隔离。
 install_skill_library_feature(ui_module, ai_module)
+install_folder_access_feature(ui_module, ai_module, skill_library_module)
 install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
 install_chat_summary_people_filter_patch(chat_summary_skill_module)
 # 定时任务系统负责调度、可信任务上下文、受限文件工作区和 NapCat 文件上传。
