@@ -113,17 +113,27 @@ def install_folder_access_unrestricted_types(
     original_parse = agent_module.parse_agent_response
 
     def parse_wrapped_agent_response(raw: str) -> dict[str, Any]:
-        last_error: Exception | None = None
-        for candidate in _json_candidates(raw):
+        candidates = _json_candidates(raw)
+        errors: list[str] = []
+        for index, candidate in enumerate(candidates, 1):
             try:
-                # Keep the original strict schema validator.  We only remove harmless
+                # Keep the original strict schema validator. We only remove harmless
                 # presentation wrappers around the JSON object.
                 return original_parse(candidate)
             except agent_module.FolderAgentProtocolError as exc:
-                last_error = exc
-        if last_error is not None:
-            raise last_error
-        raise agent_module.FolderAgentProtocolError("no JSON object found")
+                errors.append(
+                    f"candidate#{index} length={len(candidate)}: {exc}"
+                )
+        if not candidates:
+            raise agent_module.FolderAgentProtocolError(
+                "no JSON candidate found; raw response was empty or contained no balanced object"
+            )
+        summary = " | ".join(errors[:12])
+        if len(errors) > 12:
+            summary += f" | ... {len(errors) - 12} more candidates"
+        raise agent_module.FolderAgentProtocolError(
+            f"all {len(candidates)} JSON candidate(s) rejected: {summary}"
+        )
 
     agent_module.parse_agent_response = parse_wrapped_agent_response
     _hide_obsolete_extension_editor(feature_module)
@@ -158,7 +168,7 @@ def _json_candidates(raw: str) -> list[str]:
         if isinstance(decoded, str):
             add(decoded)
 
-    # Models often prepend a sentence such as “工具请求如下：”.  Extract complete
+    # Models often prepend a sentence such as “工具请求如下：”. Extract complete
     # balanced top-level JSON objects without accepting a relaxed object schema.
     for candidate in list(candidates):
         for value in _balanced_json_objects(candidate):
