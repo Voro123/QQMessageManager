@@ -15,6 +15,9 @@ from . import automation_stage3_transfer as automation_stage3_transfer_module
 from . import automation_storage as automation_storage_module
 from . import chat_summary_feature as chat_summary_module
 from . import chat_summary_skill as chat_summary_skill_module
+from . import folder_access_agent as folder_access_agent_module
+from . import folder_access_feature as folder_access_feature_module
+from . import folder_access_service as folder_access_service_module
 from . import image_generation_feature as image_generation_module
 from . import napcat_client as napcat_module
 from . import skill_library_feature as skill_library_module
@@ -44,11 +47,12 @@ from .button_position_patch import install_summary_send_button_swap
 from .chat_summary_feature import install_chat_summary_feature
 from .chat_summary_people_patch import install_chat_summary_people_filter_patch
 from .chat_summary_skill import install_chat_summary_skill
+from .folder_access_feature import install_folder_access_feature
+from .folder_access_unrestricted_types import install_folder_access_unrestricted_types
 from .image_generation_feature import install_image_generation_feature
 from .image_generation_model_selector import install_image_generation_model_selector
 from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
-from .folder_access_feature import install_folder_access_feature
 from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
 from .sticker_current_session_guard import install_sticker_current_session_guard
@@ -77,6 +81,12 @@ install_ai_request_timeout(ui_module, ai_module, image_generation_module)
 # Skill 库统一管理普通聊天角色和能力；定时文件 Skill 由任务系统单独隔离。
 install_skill_library_feature(ui_module, ai_module)
 install_folder_access_feature(ui_module, ai_module, skill_library_module)
+# 文件夹权限不再按扩展名限制；同时兼容模型在严格 JSON 外添加无害包装文本。
+install_folder_access_unrestricted_types(
+    folder_access_agent_module,
+    folder_access_service_module,
+    folder_access_feature_module,
+)
 install_chat_summary_skill(ui_module, chat_summary_module, ai_summary_module)
 install_chat_summary_people_filter_patch(chat_summary_skill_module)
 # 定时任务系统负责调度、可信任务上下文、受限文件工作区和 NapCat 文件上传。
