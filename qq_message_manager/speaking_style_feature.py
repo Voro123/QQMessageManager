@@ -39,6 +39,7 @@ CAT_STYLE_ID = "builtin_cat"
 MAX_STYLE_FIELD_CHARS = 6000
 MAX_PENDING_SAMPLES = 500
 MAX_SAMPLE_CHARS = 2000
+MAX_ACTIVE_LEARNERS = 3
 STYLE_DIMENSIONS = (
     ("identity", "身份与关系"),
     ("personality", "性格与价值倾向"),
@@ -213,13 +214,15 @@ class SpeakingStyleStore:
     def save_style(self, source: SpeakingStyle) -> SpeakingStyle:
         style = source.normalized()
         if style.learning_enabled and not style.learning_qq:
-            raise ValueError("开启学习时必须填写目标 QQ，或选择一个已有私聊对象。")
+            raise ValueError("开启学习时必须直接填写目标 QQ。")
         styles = self.load()
         if style.learning_enabled:
-            for existing in styles:
-                if existing.style_id != style.style_id and existing.learning_enabled:
-                    existing.learning_enabled = False
-                    existing.revision += 1
+            active_others = [
+                existing for existing in styles
+                if existing.style_id != style.style_id and existing.learning_enabled
+            ]
+            if len(active_others) >= MAX_ACTIVE_LEARNERS:
+                raise ValueError("最多只能同时学习 3 个说话风格，请先关闭一个现有学习任务。")
         style.revision += 1
         replaced = False
         for index, existing in enumerate(styles):
@@ -247,45 +250,48 @@ class SpeakingStyleStore:
     def active_learner(self) -> SpeakingStyle | None:
         return next((style for style in self.load() if style.learning_enabled), None)
 
+    def active_learners(self) -> list[SpeakingStyle]:
+        return [style for style in self.load() if style.learning_enabled]
+
     def append_learning_sample(
         self,
         message: Any,
         owned_stickers: list[dict[str, str]] | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
     ) -> tuple[SpeakingStyle, list[str]] | None:
-        style = self.active_learner()
-        if style is None or not _matches_learning_source(style, message):
-            return None
-        text = _bounded_text(getattr(message, "text", ""), MAX_SAMPLE_CHARS)
-        stickers = [
-            {
-                "id": str(item.get("id") or ""),
-                "summary": _bounded_text(item.get("summary", ""), 100),
-                "usage_hint": _bounded_text(item.get("usage_hint", ""), 160),
-            }
-            for item in list(owned_stickers or [])[:3]
-            if isinstance(item, dict) and str(item.get("id") or "")
-        ]
-        if not text and not stickers:
-            return None
-        payload = {"text": "", "owned_stickers_used": stickers}
-        overhead = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
-        payload["text"] = text[: max(0, MAX_SAMPLE_CHARS - overhead - 8)]
-        sample = json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
+        ready = self.append_learning_samples(
+            message,
+            owned_stickers,
+            conversation_context,
         )
-        style.pending_samples.append(sample)
-        style.pending_samples = style.pending_samples[-MAX_PENDING_SAMPLES:]
+        return ready[0] if ready else None
+
+    def append_learning_samples(
+        self,
+        message: Any,
+        owned_stickers: list[dict[str, str]] | None = None,
+        conversation_context: list[dict[str, str]] | None = None,
+    ) -> list[tuple[SpeakingStyle, list[str]]]:
         styles = self.load()
-        for index, existing in enumerate(styles):
-            if existing.style_id == style.style_id:
-                styles[index] = style
-                break
+        matching = [
+            style for style in styles
+            if style.learning_enabled and _matches_learning_source(style, message)
+        ]
+        if not matching:
+            return []
+        sample = _build_learning_sample(message, owned_stickers, conversation_context)
+        if not sample:
+            return []
+        ready: list[tuple[SpeakingStyle, list[str]]] = []
+        for style in matching:
+            style.pending_samples.append(sample)
+            style.pending_samples = style.pending_samples[-MAX_PENDING_SAMPLES:]
+            if len(style.pending_samples) >= style.learning_interval:
+                ready.append(
+                    (style, list(style.pending_samples[: style.learning_interval]))
+                )
         self._write(styles)
-        if len(style.pending_samples) < style.learning_interval:
-            return None
-        return style, list(style.pending_samples[: style.learning_interval])
+        return ready
 
     def apply_learning_update(
         self,
@@ -328,11 +334,12 @@ class SpeakingStyleStore:
                 continue
             seen.add(style.style_id)
             result.append(style)
-        active_seen = False
+        active_count = 0
         for style in result:
-            if style.learning_enabled and not active_seen:
-                active_seen = True
-            elif style.learning_enabled:
+            if not style.learning_enabled:
+                continue
+            active_count += 1
+            if active_count > MAX_ACTIVE_LEARNERS:
                 style.learning_enabled = False
         return result
 
@@ -367,16 +374,29 @@ class SpeakingStyleLearner(QObject):
         if not str(getattr(message, "text", "") or "").strip() and not owned_stickers:
             return
         store = SpeakingStyleStore(self.window.settings)
-        ready = store.append_learning_sample(message, owned_stickers)
-        if ready is None:
-            return
-        style, samples = ready
-        if style.style_id in self.inflight_style_ids:
+        ready_items = store.append_learning_samples(
+            message,
+            owned_stickers,
+            _learning_conversation_context(self.window, message),
+        )
+        if not ready_items:
             return
         config = self.ui_module.load_ai_config(self.window.settings).normalized()
         if not config.api_key:
             self.window.append_log("说话风格学习已暂停：未配置 AI API Key")
             return
+        for style, samples in ready_items:
+            if style.style_id in self.inflight_style_ids:
+                continue
+            self._start_iteration(style, samples, config, sticker_memory)
+
+    def _start_iteration(
+        self,
+        style: SpeakingStyle,
+        samples: list[str],
+        config: Any,
+        sticker_memory: Any,
+    ) -> None:
         self.inflight_style_ids.add(style.style_id)
         snapshot = style.to_dict()
         all_available_stickers = _available_sticker_options(sticker_memory)
@@ -578,7 +598,7 @@ class SpeakingStyleEditDialog(QDialog):
 
         learning_group = QGroupBox("从 QQ 对象持续学习")
         learning_form = QFormLayout(learning_group)
-        self.learning_enabled = QCheckBox("主动开启学习（全局同时只能有一个风格学习）")
+        self.learning_enabled = QCheckBox("主动开启学习（全局最多同时学习 3 个风格）")
         self.learning_enabled.setChecked(style.learning_enabled)
         self.target_input = QLineEdit(style.learning_qq)
         self.target_input.setPlaceholderText("直接填写要学习的 QQ 号")
@@ -763,9 +783,13 @@ def _learning_messages(
             "content": (
                 "你是中文聊天说话风格分析器。根据同一个 QQ 用户的新消息，迭代已有风格画像。"
                 "只分析稳定的表达特征，不推断隐私、身份事实、政治宗教、疾病或敏感属性。"
-                "保留已有且仍有证据支持的规则，用新样本纠正不准确内容。"
+                "每次都重写并压缩现有九维画像：整合旧画像和新证据，去重、纠错、替换过时判断，"
+                "不要在原文末尾不断追加新条目。每个字段最多 200 个中文字符；这是生成要求，"
+                "应由你主动概括满足，不要讨论字数限制。"
                 "惯用表情包维度只能记录样本中实际使用且出现在本地可用表情包列表中的 ID，"
                 "并概括其常见使用语境；不得编造 ID，也不得记录本地没有的表情包。"
+                "样本里的 preceding_context 是目标发言前同一会话中其他人的对话，只用于理解"
+                "目标为何这样说以及这句话的语境；不得把其他人的表达习惯学到目标画像中。"
                 "只输出一个 JSON 对象，不要 Markdown、解释或代码块。"
             ),
         },
@@ -813,6 +837,86 @@ def parse_learning_update(
 
 def _matches_learning_source(style: SpeakingStyle, message: Any) -> bool:
     return str(getattr(message, "sender_id", "") or "") == style.learning_qq
+
+
+def _learning_conversation_context(window: Any, message: Any) -> list[dict[str, str]]:
+    session_id = str(getattr(message, "session_id", "") or "")
+    messages_by_session = getattr(window, "messages", {})
+    if not session_id or not isinstance(messages_by_session, dict):
+        return []
+    history = list(messages_by_session.get(session_id, []) or [])
+    current_index = next(
+        (index for index in range(len(history) - 1, -1, -1) if history[index] is message),
+        len(history),
+    )
+    result = []
+    for item in history[max(0, current_index - 6):current_index]:
+        text = _bounded_text(getattr(item, "text", ""), 160)
+        if not text:
+            continue
+        result.append(
+            {
+                "sender_id": str(getattr(item, "sender_id", "") or ""),
+                "sender_name": str(getattr(item, "sender_name", "") or ""),
+                "text": text,
+                "outgoing": "1" if bool(getattr(item, "outgoing", False)) else "0",
+            }
+        )
+    return result
+
+
+def _build_learning_sample(
+    message: Any,
+    owned_stickers: list[dict[str, str]] | None,
+    conversation_context: list[dict[str, str]] | None,
+) -> str:
+    text = _bounded_text(getattr(message, "text", ""), MAX_SAMPLE_CHARS)
+    stickers = [
+        {
+            "id": str(item.get("id") or ""),
+            "summary": _bounded_text(item.get("summary", ""), 100),
+            "usage_hint": _bounded_text(item.get("usage_hint", ""), 160),
+        }
+        for item in list(owned_stickers or [])[:3]
+        if isinstance(item, dict) and str(item.get("id") or "")
+    ]
+    if not text and not stickers:
+        return ""
+    context = [
+        {
+            "sender_id": str(item.get("sender_id") or "")[:40],
+            "sender_name": _bounded_text(item.get("sender_name", ""), 60),
+            "text": _bounded_text(item.get("text", ""), 160),
+            "outgoing": "1" if str(item.get("outgoing") or "") == "1" else "0",
+        }
+        for item in list(conversation_context or [])[-6:]
+        if isinstance(item, dict) and _bounded_text(item.get("text", ""), 160)
+    ]
+    return _compact_learning_sample(
+        {
+            "target_text": text[:600],
+            "preceding_context": context,
+            "owned_stickers_used": stickers,
+        }
+    )
+
+
+def _compact_learning_sample(payload: dict[str, Any]) -> str:
+    context = list(payload.get("preceding_context") or [])
+    working = dict(payload)
+    while True:
+        working["preceding_context"] = context
+        serialized = json.dumps(working, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized) <= MAX_SAMPLE_CHARS:
+            return serialized
+        if context:
+            context.pop(0)
+            continue
+        target = str(working.get("target_text") or "")
+        if target:
+            working["target_text"] = target[: max(0, len(target) - (len(serialized) - MAX_SAMPLE_CHARS) - 8)]
+            continue
+        return serialized[:MAX_SAMPLE_CHARS]
 
 
 def _owned_stickers_from_message(memory: Any, message: Any) -> list[dict[str, str]]:

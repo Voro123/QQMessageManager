@@ -14,6 +14,8 @@ from qq_message_manager.speaking_style_feature import (
     STYLE_DIMENSIONS,
     SpeakingStyle,
     SpeakingStyleStore,
+    _learning_conversation_context,
+    _learning_messages,
     _owned_stickers_from_message,
     parse_learning_update,
 )
@@ -64,15 +66,39 @@ class SpeakingStyleStoreTests(unittest.TestCase):
         self.assertNotIn("shuimen", enabled)
         self.assertIn("chat_summary", enabled)
 
-    def test_only_one_style_can_learn(self) -> None:
-        first = self.store.save_style(
-            SpeakingStyle(name="甲", learning_enabled=True, learning_qq="10001")
-        )
-        second = self.store.save_style(
-            SpeakingStyle(name="乙", learning_enabled=True, learning_qq="10002")
-        )
-        self.assertFalse(self.store.find(first.style_id).learning_enabled)
-        self.assertTrue(self.store.find(second.style_id).learning_enabled)
+    def test_up_to_three_styles_can_learn_and_fourth_is_rejected(self) -> None:
+        saved = [
+            self.store.save_style(
+                SpeakingStyle(
+                    name=f"风格 {index}",
+                    learning_enabled=True,
+                    learning_qq=str(10000 + index),
+                )
+            )
+            for index in range(3)
+        ]
+        self.assertEqual(len(self.store.active_learners()), 3)
+        self.assertTrue(all(self.store.find(style.style_id).learning_enabled for style in saved))
+        with self.assertRaisesRegex(ValueError, "最多只能同时学习 3 个"):
+            self.store.save_style(
+                SpeakingStyle(name="第四个", learning_enabled=True, learning_qq="20000")
+            )
+
+    def test_same_message_can_feed_multiple_active_styles_for_same_qq(self) -> None:
+        for name in ("甲", "乙"):
+            self.store.save_style(
+                SpeakingStyle(
+                    name=name,
+                    learning_enabled=True,
+                    learning_qq="10001",
+                    learning_interval=5,
+                )
+            )
+        message = SimpleNamespace(sender_id="10001", session_id="group:1", text="样本")
+        for _index in range(4):
+            self.assertEqual(self.store.append_learning_samples(message), [])
+        ready = self.store.append_learning_samples(message)
+        self.assertEqual({style.name for style, _samples in ready}, {"甲", "乙"})
 
     def test_custom_style_can_be_deleted_with_selection_and_learning_state(self) -> None:
         style = self.store.save_style(
@@ -82,7 +108,7 @@ class SpeakingStyleStoreTests(unittest.TestCase):
         self.assertTrue(self.store.delete(style.style_id))
         self.assertIsNone(self.store.find(style.style_id))
         self.assertEqual(self.store.selected_id(), "")
-        self.assertIsNone(self.store.active_learner())
+        self.assertEqual(self.store.active_learners(), [])
         self.assertFalse(self.store.delete(CAT_STYLE_ID))
 
     def test_learning_runs_after_n_matching_messages_and_updates_dimensions(self) -> None:
@@ -224,6 +250,34 @@ class SpeakingStyleProtocolTests(unittest.TestCase):
         system_prompt = str(messages[0]["content"])
         self.assertIn("不要假装理解、硬接话或编造背景", system_prompt)
         self.assertIn("无法充分理解话题背景与当前发言含义时，只输出 __NO_REPLY__", system_prompt)
+
+    def test_learning_prompt_rewrites_compact_fields_and_uses_context_only_for_meaning(self) -> None:
+        style = SpeakingStyle(name="测试", wording="旧画像")
+        messages = _learning_messages(style, [], [])
+        system_prompt = messages[0]["content"]
+        self.assertIn("重写并压缩现有九维画像", system_prompt)
+        self.assertIn("不要在原文末尾不断追加", system_prompt)
+        self.assertIn("每个字段最多 200 个中文字符", system_prompt)
+        self.assertIn("不得把其他人的表达习惯学到目标画像", system_prompt)
+
+    def test_learning_sample_includes_preceding_other_people_context(self) -> None:
+        other = SimpleNamespace(
+            sender_id="20001",
+            sender_name="其他人",
+            text="今晚还是老地方",
+            outgoing=False,
+        )
+        target = SimpleNamespace(
+            session_id="group:1",
+            sender_id="10001",
+            sender_name="目标",
+            text="行，照旧",
+            outgoing=False,
+        )
+        window = SimpleNamespace(messages={"group:1": [other, target]})
+        context = _learning_conversation_context(window, target)
+        self.assertEqual(context[0]["sender_id"], "20001")
+        self.assertEqual(context[0]["text"], "今晚还是老地方")
 
 
 if __name__ == "__main__":

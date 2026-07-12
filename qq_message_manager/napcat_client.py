@@ -99,6 +99,7 @@ class NapCatWorker(QObject):
             async with websocket:
                 self.connected.emit()
                 self.log.emit("已连接 NapCatQQ WebSocket")
+                await self._request_friend_list()
                 await self._request_recent_sessions()
                 async for payload in websocket:
                     if self._stop_requested:
@@ -158,11 +159,28 @@ class NapCatWorker(QObject):
                 self.log.emit(f"获取最近会话失败：{_action_error(event)}")
             return True
 
+        if echo_text.startswith("private_friend_list:"):
+            if ok:
+                friends = _extract_friend_names(event.get("data"))
+                for user_id, private_name in friends.items():
+                    self._private_names[user_id] = private_name
+                    self.session_name_updated.emit(f"private:{user_id}", private_name)
+                self.log.emit(f"已读取 {len(friends)} 个好友昵称")
+            else:
+                self.log.emit(f"获取好友昵称失败：{_action_error(event)}")
+            return True
+
         if echo_text.startswith("history:"):
             if ok:
                 session_id = _echo_session_id(echo_text, "history")
                 kind, _ = _split_session_id(session_id)
                 messages = _extract_history_messages(event.get("data"), session_id, kind)
+                if kind == "private":
+                    user_id = _session_target_id(session_id)
+                    cached_name = self._private_names.get(user_id, "")
+                    if cached_name:
+                        for message in messages:
+                            message.session_name = cached_name
                 if messages:
                     self.history_messages_received.emit(messages[-HISTORY_MESSAGE_LIMIT:])
                     self.log.emit(f"已加载 {session_id} 的 {len(messages[-HISTORY_MESSAGE_LIMIT:])} 条历史消息")
@@ -216,6 +234,13 @@ class NapCatWorker(QObject):
             "get_recent_contact",
             {"count": RECENT_SESSION_LIMIT},
             self._next_echo("recent_sessions"),
+        )
+
+    async def _request_friend_list(self) -> None:
+        await self._send_action(
+            "get_friend_list",
+            {"no_cache": False},
+            self._next_echo("private_friend_list"),
         )
 
     def _request_history(self, session_id: str, kind: str, name: str = "") -> None:
@@ -603,6 +628,31 @@ def _contact_name(item: dict[str, Any], kind: str, target_id: str) -> str:
         item.get("name"),
         fallback,
     )
+
+
+def _extract_friend_names(data: Any) -> dict[str, str]:
+    """Return NapCat get_friend_list names, preferring user remarks over nicknames."""
+    result: dict[str, str] = {}
+    for item in _extract_list(data, ("friends", "list", "items", "data", "rows")):
+        if not isinstance(item, dict):
+            continue
+        user_id = _first_text(
+            item.get("user_id"),
+            item.get("userId"),
+            item.get("uin"),
+            item.get("qq"),
+        )
+        if not user_id:
+            continue
+        name = _first_text(
+            item.get("remark"),
+            item.get("nickname"),
+            item.get("nick"),
+            item.get("name"),
+        )
+        if name and name not in {user_id, f"QQ {user_id}"}:
+            result[user_id] = name
+    return result
 
 
 def _extract_history_messages(data: Any, session_id: str, kind: str) -> list[ChatMessage]:
