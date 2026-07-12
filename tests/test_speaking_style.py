@@ -14,9 +14,11 @@ from qq_message_manager.speaking_style_feature import (
     STYLE_DIMENSIONS,
     SpeakingStyle,
     SpeakingStyleStore,
+    _owned_stickers_from_message,
     parse_learning_update,
 )
 from qq_message_manager.ai_rules_cleanup import _build_clean_chat_messages
+from qq_message_manager.sticker_memory import extract_sticker_records_from_event
 
 
 class SpeakingStyleStoreTests(unittest.TestCase):
@@ -156,6 +158,46 @@ class SpeakingStyleProtocolTests(unittest.TestCase):
         self.assertEqual(set(parsed), {key for key, _label in STYLE_DIMENSIONS})
         with self.assertRaises(ValueError):
             parse_learning_update('{"wording":"简短"}')
+
+    def test_learning_keeps_only_locally_available_sticker_ids(self) -> None:
+        payload = {key: label for key, label in STYLE_DIMENSIONS}
+        payload["stickers"] = (
+            "<STICKER:mf_owned>：开心时使用\n"
+            "<STICKER:mf_missing>：不知道什么时候使用"
+        )
+        parsed = parse_learning_update(
+            json.dumps(payload, ensure_ascii=False),
+            allowed_sticker_ids={"mf_owned"},
+        )
+        self.assertIn("mf_owned", parsed["stickers"])
+        self.assertNotIn("mf_missing", parsed["stickers"])
+
+    def test_received_sticker_is_learned_only_when_local_memory_can_send_it(self) -> None:
+        event = {
+            "message": [{
+                "type": "mface",
+                "data": {
+                    "emoji_id": "11",
+                    "emoji_package_id": "22",
+                    "key": "secret-key",
+                    "summary": "开心",
+                },
+            }]
+        }
+        record = extract_sticker_records_from_event(event)[0]
+
+        class Memory:
+            def __init__(self, owned: bool) -> None:
+                self.owned = owned
+
+            def get(self, sticker_id: str):
+                return record if self.owned and sticker_id == record.id else None
+
+        message = SimpleNamespace(raw_event=event)
+        learned = _owned_stickers_from_message(Memory(True), message)
+        self.assertEqual(learned[0]["id"], record.id)
+        self.assertEqual(learned[0]["summary"], "开心")
+        self.assertEqual(_owned_stickers_from_message(Memory(False), message), [])
 
     def test_prompt_combines_dimensions_without_exposing_learning_process(self) -> None:
         style = SpeakingStyle(name="测试", personality="温和", rhythm="短句")
