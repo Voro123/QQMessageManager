@@ -42,8 +42,12 @@ FILE_INTENT_RE = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class FolderRoute:
-    alias: str = ""
+    aliases: tuple[str, ...] = ()
     immediate_reply: str = ""
+
+    @property
+    def alias(self) -> str:
+        return self.aliases[0] if len(self.aliases) == 1 else ""
 
 
 class FolderFeatureBridge(QObject):
@@ -102,21 +106,19 @@ class FolderAccessController:
             return None
         folded = text.casefold()
         matched = [grant for grant in grants if grant.alias.casefold() in folded]
-        if len(matched) > 1:
-            self._audit_denied(message, "", "ambiguous_alias")
-            return FolderRoute(immediate_reply="这条消息可能同时涉及多个关联项目，请明确只操作其中一个。")
-        if not matched:
-            allowed = [grant for grant in grants if str(message.sender_id) in grant.allowed_sender_ids]
-            if not allowed:
-                self._audit_denied(message, "", "sender_not_allowed")
-                return FolderRoute(immediate_reply="你没有操作受控文件夹的权限。")
-            aliases = "、".join(grant.alias for grant in allowed)
-            return FolderRoute(immediate_reply=f"请明确要操作哪个关联项目：{aliases}。")
-        grant = matched[0]
-        if str(message.sender_id) not in grant.allowed_sender_ids:
-            self._audit_denied(message, grant.alias, "sender_not_allowed")
-            return FolderRoute(immediate_reply=f"你没有操作 {grant.alias} 文件夹的权限。")
-        return FolderRoute(alias=grant.alias)
+        allowed = [grant for grant in grants if str(message.sender_id) in grant.allowed_sender_ids]
+        if matched:
+            denied = [grant for grant in matched if grant not in allowed]
+            if denied:
+                self._audit_denied(message, denied[0].alias, "sender_not_allowed")
+                return FolderRoute(immediate_reply=f"你没有操作 {denied[0].alias} 文件夹的权限。")
+            candidates = matched
+        else:
+            candidates = allowed
+        if not candidates:
+            self._audit_denied(message, "", "sender_not_allowed")
+            return FolderRoute(immediate_reply="你没有操作受控文件夹的权限。")
+        return FolderRoute(aliases=tuple(grant.alias for grant in candidates))
 
     def _audit_denied(self, message: Any, alias: str, error_code: str) -> None:
         service = getattr(self, "service", None)
@@ -136,7 +138,7 @@ class FolderAccessController:
             user_text=str(message.text or ""),
             session_id=str(message.session_id),
             sender_id=str(message.sender_id),
-            required_alias=route.alias,
+            allowed_aliases=route.aliases,
         )
 
     def consume_confirmation(self, message: Any) -> bool:
@@ -351,7 +353,7 @@ class FolderGrantEditDialog(QDialog):
         form.addRow(self.confirm)
         form.addRow("允许操作的 QQ", self.senders)
         form.addRow("允许扩展名", self.extensions)
-        tip = QLabel("默认只读、禁止写入、写入需确认。真实路径不会发送给 AI。")
+        tip = QLabel("默认只读、禁止写入；开启写入后默认直接执行，可按需启用写入确认。真实路径不会发送给 AI。")
         tip.setStyleSheet("color:#667085;")
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._validate_accept)

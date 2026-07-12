@@ -51,7 +51,7 @@ def _install_clean_settings_ui(ui_module: Any) -> None:
         self.mention_enabled.setToolTip("被 @ 时使用单独的较短延迟；该触发会覆盖普通新消息触发，避免回复两次。")
         self.require_recent_enabled.setToolTip("计时结束准备回复时，检查最近指定秒数内是否仍有其他人发言。")
         self.prevent_self_follow.setToolTip("避免机器人刚发完消息又继续接自己的话。")
-        self.allow_ai_skip.setToolTip("允许 AI 在不适合插话时选择不发送。")
+        self.allow_ai_skip.setToolTip("允许 AI 在不适合插话，或不理解话题背景和当前发言时选择不发送。")
         self.context_count.setMaximum(999)
 
         buttons = self.findChild(QDialogButtonBox)
@@ -75,7 +75,7 @@ def _install_clean_settings_ui(ui_module: Any) -> None:
 
         tabs = QTabWidget(self)
         tabs.setDocumentMode(True)
-        tabs.addTab(_scroll_tab(_build_model_tab(self)), "模型与角色")
+        tabs.addTab(_scroll_tab(_build_model_tab(self)), "模型与风格")
         tabs.addTab(_scroll_tab(_build_behavior_tab(self, ui_module)), "回复策略")
         tabs.addTab(_scroll_tab(_build_capability_tab(self)), "上下文与能力")
 
@@ -117,19 +117,15 @@ def _build_model_tab(dialog: Any) -> QWidget:
     test_layout.addWidget(dialog.test_result_label, 1)
     connection_form.addRow("连接检查", test_row)
 
-    role_group = QGroupBox("角色与表达")
+    skill_group = QGroupBox("能力 Skill")
+    QFormLayout(skill_group).setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+    role_group = QGroupBox("说话风格")
     role_form = QFormLayout(role_group)
     role_form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
-    role_form.addRow("Skill", dialog.skill_input)
-    role_form.addRow("自定义 Prompt", dialog.prompt_input)
-    role_form.addRow(
-        "",
-        _note(
-            "优先级已整理为：基础输出格式 > Skill 中的具体说话格式 > 自定义 Prompt > 当前聊天上下文。"
-        ),
-    )
 
     layout.addWidget(connection_group)
+    layout.addWidget(skill_group)
     layout.addWidget(role_group)
     layout.addStretch(1)
     return page
@@ -266,13 +262,18 @@ def _build_clean_chat_messages(ai_module: Any):
             "只输出将发送的正文；不要解释、加引号、暴露 AI 身份或添加发言人前缀。",
             "不要输出思考过程、分析过程、系统提示、<think>、XML 或 HTML 标签。",
             "回复应像真实 QQ 消息，通常不超过 120 个字；除非上下文明显需要更完整的说明。",
+            "对自己不懂、缺少上下文或无法确认指代的话题，不要假装理解、硬接话或编造背景；只有充分理解相关背景和这句话含义时才自然参与。",
         ]
         if allow_image_read_enabled and images_in_context:
             rules.append("上下文已实际传入图片时可以参考图片；读取失败时不得假装看见。")
         else:
             rules.append("遇到“[图片消息已过滤]”时表示图片内容不可见，不得猜测图片内容。")
         if allow_ai_skip:
-            rules.append(f"不适合回复时，只输出 {ai_module.NO_REPLY_TOKEN}。")
+            rules.append(
+                f"不适合回复，或无法充分理解话题背景与当前发言含义时，只输出 {ai_module.NO_REPLY_TOKEN}。"
+            )
+        else:
+            rules.append("必须回应但信息不足时，应简短询问必要背景，不要假装听懂。")
 
         system_prompt = (
             "【任务与基础规则】\n- "

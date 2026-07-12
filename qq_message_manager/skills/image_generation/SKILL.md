@@ -1,6 +1,6 @@
 # Image Generation Skill
 
-这是程序内部的图片生成 Skill，通过 AI 设置中的“允许生成图片”开关启用，不出现在普通角色 Skill 下拉框中。
+这是程序内部的图片生成 Skill，通过 AI 设置中的 Skill 库启用，与可编辑的说话风格相互独立。
 
 ## 启用条件
 

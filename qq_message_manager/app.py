@@ -21,6 +21,7 @@ from . import folder_access_service as folder_access_service_module
 from . import image_generation_feature as image_generation_module
 from . import napcat_client as napcat_module
 from . import skill_library_feature as skill_library_module
+from . import speaking_style_feature as speaking_style_module
 from . import sticker_library_feature as sticker_library_module
 from . import sticker_memory as sticker_module
 from . import ui as ui_module
@@ -56,6 +57,7 @@ from .image_generation_toggle_patch import install_image_generation_toggle
 from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
+from .speaking_style_feature import install_speaking_style_feature
 from .sticker_current_session_guard import install_sticker_current_session_guard
 from .sticker_library_feature import install_sticker_library_feature
 from .sticker_metadata_editor import install_sticker_metadata_editor
@@ -79,8 +81,9 @@ install_image_generation_toggle(ui_module, image_generation_module, ai_module)
 install_image_generation_model_selector(ui_module, ai_module, image_generation_module)
 # 统一接口超时覆盖聊天、连接测试、总结和生图；保存后会即时更新运行时值。
 install_ai_request_timeout(ui_module, ai_module, image_generation_module)
-# Skill 库统一管理普通聊天角色和能力；定时文件 Skill 由任务系统单独隔离。
+# Skill 库统一管理普通聊天能力；说话风格由独立的可编辑风格库管理。
 install_skill_library_feature(ui_module, ai_module)
+install_speaking_style_feature(ui_module, ai_module, skill_library_module)
 install_folder_access_feature(ui_module, ai_module, skill_library_module)
 # 文件夹权限不再按扩展名限制；同时兼容模型在严格 JSON 外添加无害包装文本。
 install_folder_access_unrestricted_types(

@@ -10,7 +10,6 @@ from qq_message_manager import folder_access_agent as agent_module
 from qq_message_manager import folder_access_feature as feature_module
 from qq_message_manager import folder_access_service as service_module
 from qq_message_manager.folder_access_codebase_tools import (
-    MAX_AGENT_ANALYSIS_STEPS,
     install_folder_access_codebase_tools,
 )
 from qq_message_manager.folder_access_models import FolderGrant
@@ -126,6 +125,16 @@ class RepositoryReadToolTests(CodebaseToolsTestCase):
         self.assertEqual(search.data["matches"][0]["path"], "demo/service.py")
         self.assertEqual(search.data["matches"][0]["line"], 5)
 
+        single_file = self.execute(
+            "search_code",
+            {"path": "demo/service.py", "query": "helper"},
+        )
+        self.assertTrue(single_file.success)
+        self.assertEqual(
+            {item["path"] for item in single_file.data["matches"]},
+            {"demo/service.py"},
+        )
+
     def test_symbol_reference_and_line_reads(self) -> None:
         symbol = self.execute(
             "find_symbol",
@@ -198,6 +207,56 @@ class RepositoryReadToolTests(CodebaseToolsTestCase):
 
 
 class RepositoryAgentTests(CodebaseToolsTestCase):
+    def test_prompt_keeps_internal_code_evidence_out_of_normal_answers(self) -> None:
+        captured: list[list[dict]] = []
+
+        def completion(_config, messages, **_kwargs):
+            captured.append(messages)
+            return '{"kind":"final","text":"每次回复会先判断触发条件，再生成并发送回复。"}'
+
+        agent = agent_module.FolderAccessAgent(
+            self.service,
+            completion,
+            skill_enabled=lambda: True,
+        )
+        agent.run(
+            SimpleNamespace(provider="test", model="test"),
+            user_text="每次 AI 房间内回复会经过什么操作？",
+            session_id="group:1",
+            sender_id="10001",
+            required_alias="A项目",
+        )
+
+        system_prompt = str(captured[0][0]["content"])
+        self.assertIn("问什么答什么", system_prompt)
+        self.assertIn("默认不要主动展示文件路径、代码行号", system_prompt)
+        self.assertIn("没有明确要求输出代码时，不要输出代码", system_prompt)
+
+    def test_repository_prompt_defines_project_main_directory_as_grant_root(self) -> None:
+        captured: list[list[dict]] = []
+
+        def completion(_config, messages, **_kwargs):
+            captured.append(messages)
+            return '{"kind":"final","text":"准备创建"}'
+
+        agent = agent_module.FolderAccessAgent(
+            self.service,
+            completion,
+            skill_enabled=lambda: True,
+        )
+        agent.run(
+            SimpleNamespace(provider="test", model="test"),
+            user_text="请在项目主目录创建 1.txt，内容为 123",
+            session_id="group:1",
+            sender_id="10001",
+            required_alias="A项目",
+        )
+
+        system_prompt = str(captured[0][0]["content"])
+        self.assertIn("每个 alias 本身就代表对应授权文件夹的根目录", system_prompt)
+        self.assertIn("write_text 的 path 使用文件名本身，例如 1.txt", system_prompt)
+        self.assertIn("不要因此再次询问目录 alias 或精确目录名", system_prompt)
+
     def test_code_analysis_can_use_more_than_four_steps(self) -> None:
         request = json.dumps(
             {
@@ -231,7 +290,6 @@ class RepositoryAgentTests(CodebaseToolsTestCase):
         )
         self.assertEqual(reply, "已完成五步代码库分析")
         self.assertEqual(len(calls), 6)
-        self.assertGreater(MAX_AGENT_ANALYSIS_STEPS, 4)
 
     def test_protocol_error_is_sent_back_for_two_repair_attempts(self) -> None:
         responses = [
@@ -269,7 +327,7 @@ class RepositoryAgentTests(CodebaseToolsTestCase):
         serialized = json.dumps(captured[1], ensure_ascii=False)
         self.assertIn("上一条输出不符合工具协议", serialized)
 
-    def test_simple_file_request_still_uses_four_step_limit(self) -> None:
+    def test_simple_file_request_can_continue_past_four_steps(self) -> None:
         request = json.dumps(
             {
                 "kind": "tool",
@@ -279,7 +337,7 @@ class RepositoryAgentTests(CodebaseToolsTestCase):
             },
             ensure_ascii=False,
         )
-        responses = [request] * 4
+        responses = [request] * 6 + ['{"kind":"final","text":"目录检查完成"}']
         calls = 0
 
         def completion(_config, _messages, **_kwargs):
@@ -299,8 +357,15 @@ class RepositoryAgentTests(CodebaseToolsTestCase):
             sender_id="10001",
             required_alias="A项目",
         )
-        self.assertIn("最多 4 个工具步骤", reply)
-        self.assertEqual(calls, 4)
+        self.assertEqual(reply, "目录检查完成")
+        self.assertEqual(calls, 7)
+        audit_rows = [
+            json.loads(line)
+            for line in self.audit.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        executed = [row for row in audit_rows if row.get("operation") == "list_directory"]
+        self.assertEqual(len(executed), 1)
 
 
 if __name__ == "__main__":

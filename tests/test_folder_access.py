@@ -224,6 +224,7 @@ class AgentTests(FolderAccessTestCase):
         self.agent = FolderAccessAgent(self.service, completion, skill_enabled=lambda: True)
 
     def test_write_confirmation_requires_same_session_and_sender(self) -> None:
+        self.grant.write_confirmation_required = True
         self.responses = [json.dumps({
             "kind": "tool", "tool": "write_text", "alias": "A项目",
             "arguments": {"path": "plan.txt", "content": "hello", "create_only": True},
@@ -239,6 +240,7 @@ class AgentTests(FolderAccessTestCase):
         self.assertEqual((self.root / "plan.txt").read_text(encoding="utf-8"), "hello")
 
     def test_confirmation_expiry_is_rejected(self) -> None:
+        self.grant.write_confirmation_required = True
         clock = [datetime(2026, 1, 1, tzinfo=timezone.utc)]
         self.agent.now_provider = lambda: clock[0]
         self.responses = [json.dumps({
@@ -261,14 +263,47 @@ class AgentTests(FolderAccessTestCase):
             with self.assertRaises(FolderAgentProtocolError):
                 parse_agent_response(raw)
 
-    def test_at_most_four_tool_steps(self) -> None:
+    def test_write_confirmation_is_disabled_by_default(self) -> None:
+        self.assertFalse(FolderGrant().write_confirmation_required)
+        restored = FolderGrant.from_dict({"alias": "A项目", "root_path": str(self.root)})
+        self.assertFalse(restored.write_confirmation_required)
+
+    def test_more_than_four_tool_steps_can_reach_final_reply(self) -> None:
         request = json.dumps({
             "kind": "tool", "tool": "list_directory", "alias": "A项目", "arguments": {},
         }, ensure_ascii=False)
-        self.responses = [request] * 4
+        self.responses = [request] * 6 + ['{"kind":"final","text":"排查完成"}']
         reply = self.agent.run(None, user_text="列出A项目", session_id="s1", sender_id="10001", required_alias="A项目")
-        self.assertIn("最多 4 个工具步骤", reply)
-        self.assertEqual(len(self.captured_messages), 4)
+        self.assertEqual(reply, "排查完成")
+        self.assertEqual(len(self.captured_messages), 7)
+
+    def test_agent_can_select_an_authorized_alias_not_written_in_message(self) -> None:
+        second = FolderGrant(
+            grant_id="grant-2",
+            alias="跑团代码",
+            description="AI 房间回复和跑团流程实现",
+            root_path=str(self.root),
+            allowed_sender_ids=["10001"],
+            allowed_extensions=[".txt", ".py"],
+        ).normalized()
+        self.grants.append(second)
+        self.responses = [
+            json.dumps({
+                "kind": "tool", "tool": "list_directory", "alias": "跑团代码", "arguments": {},
+            }, ensure_ascii=False),
+            '{"kind":"final","text":"已经定位回复流程"}',
+        ]
+        reply = self.agent.run(
+            None,
+            user_text="每次 AI 房间内回复会经过什么操作？",
+            session_id="s1",
+            sender_id="10001",
+            allowed_aliases=["A项目", "跑团代码"],
+        )
+        self.assertEqual(reply, "已经定位回复流程")
+        first_prompt = json.dumps(self.captured_messages[0], ensure_ascii=False)
+        self.assertIn("跑团代码", first_prompt)
+        self.assertIn("AI 房间回复和跑团流程实现", first_prompt)
 
     def test_model_context_never_contains_root_path(self) -> None:
         self.responses = ['{"kind":"final","text":"完成"}']
@@ -282,6 +317,20 @@ class AgentTests(FolderAccessTestCase):
         serialized = json.dumps(self.captured_messages[0], ensure_ascii=False)
         self.assertNotIn(str(self.root), serialized)
         self.assertIn("A项目", serialized)
+
+    def test_prompt_defines_project_main_directory_as_grant_root(self) -> None:
+        self.responses = ['{"kind":"final","text":"准备创建"}']
+        self.agent.run(
+            None,
+            user_text="请在项目主目录创建 1.txt，内容为 123",
+            session_id="s1",
+            sender_id="10001",
+            required_alias="A项目",
+        )
+        system_prompt = str(self.captured_messages[0][0]["content"])
+        self.assertIn("每个 alias 本身就代表对应授权文件夹的根目录", system_prompt)
+        self.assertIn("write_text 的 path 使用文件名本身，例如 1.txt", system_prompt)
+        self.assertIn("不要因此再次询问目录 alias 或精确目录名", system_prompt)
 
     def test_tool_file_content_is_redacted_before_returning_to_model(self) -> None:
         (self.root / "paths.txt").write_text(f"configured={self.root}", encoding="utf-8")
@@ -312,6 +361,16 @@ class RoutingAndCompatibilityTests(FolderAccessTestCase):
         route = self._controller(True).route(message)
         self.assertIsNotNone(route)
         self.assertEqual(route.alias, "A项目")
+
+    def test_authorized_message_without_exact_alias_lets_agent_choose(self) -> None:
+        message = SimpleNamespace(
+            historical=False, outgoing=False,
+            text="帮我检查 AI 房间项目的回复流程", sender_id="10001",
+        )
+        route = self._controller(True).route(message)
+        self.assertIsNotNone(route)
+        self.assertFalse(route.immediate_reply)
+        self.assertEqual(route.aliases, ("A项目",))
 
     def test_history_and_outgoing_messages_never_route(self) -> None:
         controller = self._controller(True)

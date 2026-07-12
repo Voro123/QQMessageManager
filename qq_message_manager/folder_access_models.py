@@ -39,7 +39,7 @@ class FolderGrant:
     enabled: bool = True
     read_enabled: bool = True
     write_enabled: bool = False
-    write_confirmation_required: bool = True
+    write_confirmation_required: bool = False
     allowed_sender_ids: list[str] = field(default_factory=list)
     allowed_extensions: list[str] = field(default_factory=lambda: list(DEFAULT_TEXT_EXTENSIONS))
 
@@ -70,7 +70,7 @@ class FolderGrant:
             enabled=bool(value.get("enabled", True)),
             read_enabled=bool(value.get("read_enabled", True)),
             write_enabled=bool(value.get("write_enabled", False)),
-            write_confirmation_required=bool(value.get("write_confirmation_required", True)),
+            write_confirmation_required=bool(value.get("write_confirmation_required", False)),
             allowed_sender_ids=list(value.get("allowed_sender_ids") or []),
             allowed_extensions=list(value.get("allowed_extensions") or DEFAULT_TEXT_EXTENSIONS),
         ).normalized()

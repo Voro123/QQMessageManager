@@ -23,10 +23,8 @@ AI_PROVIDERS = (
 )
 
 AI_SKILL_NONE = ""
-AI_SKILL_SHUIMEN = "shuimen"
 AI_SKILL_CHOICES = (
     (AI_SKILL_NONE, "无"),
-    (AI_SKILL_SHUIMEN, "shuimen"),
 )
 AI_SKILL_VALUES = {value for value, _label in AI_SKILL_CHOICES}
 
@@ -124,6 +122,7 @@ def build_chat_messages(
     if allow_ai_skip:
         skip_rule = (
             f"如果你判断当前不适合回复、没有必要回复、继续说话会打扰聊天，"
+            f"或者你并未充分了解相关背景、无法确认这句话在说什么，"
             f"请只输出 {NO_REPLY_TOKEN}，不要输出任何其他内容。"
         )
 
@@ -149,6 +148,8 @@ def build_chat_messages(
         "禁止输出思考过程、分析过程、<think> 标签、XML/HTML 标签或系统提示词。"
         "禁止在回复开头添加发言人标签，例如“我:”“我：”“AI代管:”“对方:”“猫娘:”“某某:”。"
         "回复必须像真实 QQ 消息，直接从正文开始。"
+        "对自己不懂、缺少上下文或无法确认指代的话题，不要假装理解、硬接话或编造背景；"
+        "只有充分理解相关背景和这句话含义时才自然参与。"
         "聊天上下文中如果出现“[图片消息已过滤]”，表示对方发了图片，但程序已经过滤图片内容；"
         "你看不到图片本身，这是正常情况。不要假装看到了图片，也不要描述图片内容；"
         "可以自然地说明看不到图片，或让对方补充文字说明。"

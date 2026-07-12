@@ -43,12 +43,6 @@ class SkillDefinition:
 
 BUILTIN_SKILLS = (
     SkillDefinition(
-        "shuimen",
-        "shuimen",
-        "角色 Skill",
-        "加载水门角色的说话格式、表达风格和互动规则。",
-    ),
-    SkillDefinition(
         VISION_SKILL_ID,
         "图片理解",
         "能力 Skill",
@@ -149,7 +143,7 @@ def _install_settings_library(ui_module: Any, ai_module: Any) -> None:
         original_init(self, *args, **kwargs)
         self.pending_enabled_skills = enabled_skill_ids(self.settings)
         self.skill_library_button = QPushButton("选择加载…")
-        self.skill_library_button.setToolTip("打开 Skill 库，可同时加载多个角色或能力 Skill")
+        self.skill_library_button.setToolTip("打开 Skill 库，可同时加载多个能力 Skill")
         self.skill_library_summary = QLabel()
         self.skill_library_summary.setWordWrap(True)
         self.skill_library_summary.setStyleSheet("color:#667085;")
@@ -161,9 +155,13 @@ def _install_settings_library(ui_module: Any, ai_module: Any) -> None:
         row_layout.addWidget(self.skill_library_button)
         row_layout.addWidget(self.skill_library_summary, 1)
 
-        role_form = _find_group_form(self, "角色与表达")
+        role_form = (
+            _find_group_form(self, "能力 Skill")
+            or _find_group_form(self, "说话风格")
+            or _find_group_form(self, "角色与表达")
+        )
         if role_form is not None:
-            role_form.insertRow(0, "Skill 库", row)
+            role_form.insertRow(0, "已加载能力", row)
         else:
             fallback = _find_first_form(self)
             if fallback is not None:
@@ -203,8 +201,7 @@ def _sync_dialog_controls(dialog: Any) -> None:
 
     skill_input = getattr(dialog, "skill_input", None)
     if skill_input is not None:
-        prompt_skill = "shuimen" if "shuimen" in selected else ""
-        index = skill_input.findData(prompt_skill)
+        index = skill_input.findData("")
         skill_input.setCurrentIndex(index if index >= 0 else 0)
 
     vision_checkbox = getattr(dialog, "allow_image_read_enabled", None)
@@ -327,8 +324,7 @@ class SkillLibraryDialog(QDialog):
         heading = QLabel("选择需要加载的 Skill")
         heading.setStyleSheet("font-size:18px;font-weight:600;")
         tip = QLabel(
-            "可以同时加载多个 Skill。能力 Skill 控制图片理解、图片生成和聊天总结；"
-            "角色/扩展 Skill 会注入普通聊天提示词。"
+            "可以同时加载多个能力 Skill，用于控制图片理解、图片生成、聊天总结和受控文件夹访问。"
         )
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#667085;")
