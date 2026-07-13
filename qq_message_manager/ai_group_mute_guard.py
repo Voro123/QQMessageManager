@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import weakref
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QMessageBox
 
 
 class GroupMuteBridge(QObject):
@@ -72,12 +74,21 @@ def install_ai_group_mute_guard(
     ui_module: Any,
     napcat_module: Any,
     speaking_style_module: Any | None = None,
+    image_generation_module: Any | None = None,
+    chat_summary_module: Any | None = None,
+    chat_summary_skill_module: Any | None = None,
 ) -> None:
     """Prevent quota-consuming conversational AI work while the bot is muted."""
     _install_notice_observer(napcat_module)
     _install_window_guard(ui_module)
     if speaking_style_module is not None:
         _install_style_learning_guard(speaking_style_module)
+    if image_generation_module is not None:
+        _install_image_result_guard(image_generation_module)
+    if chat_summary_module is not None:
+        _install_summary_request_guard(chat_summary_module)
+    if chat_summary_skill_module is not None:
+        _install_summary_delivery_guard(chat_summary_skill_module)
 
 
 def _install_notice_observer(napcat_module: Any) -> None:
@@ -222,3 +233,88 @@ def _install_style_learning_guard(speaking_style_module: Any) -> None:
 
     learner_cls.observe = observe_with_group_mute_guard
     learner_cls._qqmm_group_mute_guard_installed = True
+
+
+def _install_image_result_guard(image_generation_module: Any) -> None:
+    if getattr(image_generation_module, "_qqmm_group_mute_result_guard_installed", False):
+        return
+    original_handle = image_generation_module._handle_generated_image
+
+    def handle_generated_image_with_mute_guard(
+        window: Any,
+        session_id: str,
+        sender_id: str,
+        image_path: str,
+        prompt: str,
+    ) -> None:
+        checker = getattr(window, "_qqmm_is_group_muted", None)
+        if callable(checker) and checker(session_id):
+            getattr(window, "image_generation_inflight_sessions", set()).discard(session_id)
+            try:
+                Path(image_path).unlink(missing_ok=True)
+            except OSError:
+                pass
+            window.append_log("图片生成结果已丢弃：机器人当前在该群被禁言")
+            return
+        original_handle(window, session_id, sender_id, image_path, prompt)
+
+    image_generation_module._handle_generated_image = handle_generated_image_with_mute_guard
+    image_generation_module._qqmm_group_mute_result_guard_installed = True
+
+
+def _install_summary_request_guard(chat_summary_module: Any) -> None:
+    if getattr(chat_summary_module, "_qqmm_group_mute_request_guard_installed", False):
+        return
+    original_open = chat_summary_module._open_summary_dialog
+    original_history = chat_summary_module._handle_summary_history
+
+    def open_summary_with_mute_guard(window: Any, *args: Any, **kwargs: Any) -> None:
+        session_id = str(getattr(window, "current_session_id", "") or "")
+        checker = getattr(window, "_qqmm_is_group_muted", None)
+        if callable(checker) and checker(session_id):
+            window.append_log("聊天总结未执行：机器人当前在该群被禁言，未调用模型")
+            QMessageBox.information(window, "机器人已被禁言", "当前群中机器人处于禁言状态，聊天总结不会调用 AI。")
+            return
+        original_open(window, *args, **kwargs)
+
+    def handle_summary_history_with_mute_guard(window: Any, *args: Any, **kwargs: Any) -> None:
+        payload = kwargs.get("payload")
+        if payload is None and args:
+            payload = args[-1]
+        if isinstance(payload, dict) and payload.get("summary_history"):
+            request_id = str(payload.get("request_id") or "")
+            pending = getattr(window, "chat_summary_pending", {})
+            request = pending.get(request_id) if isinstance(pending, dict) else None
+            session_id = str(getattr(request, "session_id", "") or "")
+            checker = getattr(window, "_qqmm_is_group_muted", None)
+            if session_id and callable(checker) and checker(session_id):
+                pending.pop(request_id, None)
+                getattr(window, "chat_summary_deliveries", {}).pop(request_id, None)
+                window.append_log("聊天总结未执行：读取完成时机器人已被禁言，未调用模型")
+                return
+        original_history(window, *args, **kwargs)
+
+    chat_summary_module._open_summary_dialog = open_summary_with_mute_guard
+    chat_summary_module._handle_summary_history = handle_summary_history_with_mute_guard
+    chat_summary_module._qqmm_group_mute_request_guard_installed = True
+
+
+def _install_summary_delivery_guard(chat_summary_skill_module: Any) -> None:
+    if getattr(chat_summary_skill_module, "_qqmm_group_mute_delivery_guard_installed", False):
+        return
+    original_deliver = chat_summary_skill_module._deliver_summary
+
+    def deliver_summary_with_mute_guard(
+        window: Any,
+        session_id: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        checker = getattr(window, "_qqmm_is_group_muted", None)
+        if callable(checker) and checker(session_id):
+            window.append_log("聊天总结结果已丢弃：机器人当前在该群被禁言")
+            return
+        original_deliver(window, session_id, *args, **kwargs)
+
+    chat_summary_skill_module._deliver_summary = deliver_summary_with_mute_guard
+    chat_summary_skill_module._qqmm_group_mute_delivery_guard_installed = True
