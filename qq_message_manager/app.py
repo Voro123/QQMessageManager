@@ -155,8 +155,15 @@ install_ai_min_speech_interval(
     image_generation_module,
     chat_summary_skill_module,
 )
-# 群禁言是最外层配额守卫：在所有普通回复、图片生成、总结和风格学习之前停止 AI 调用。
-install_ai_group_mute_guard(ui_module, napcat_module, speaking_style_module)
+# 群禁言是最外层配额守卫：在普通回复、图片生成、总结和风格学习之前停止 AI 调用。
+install_ai_group_mute_guard(
+    ui_module,
+    napcat_module,
+    speaking_style_module,
+    image_generation_module,
+    chat_summary_module,
+    chat_summary_skill_module,
+)
 
 
 def main() -> int:
