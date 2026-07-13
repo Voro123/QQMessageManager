@@ -26,6 +26,7 @@ from . import sticker_library_feature as sticker_library_module
 from . import sticker_memory as sticker_module
 from . import ui as ui_module
 from .ai_context_limit_patch import install_ai_context_message_limit
+from .ai_group_mute_guard import install_ai_group_mute_guard
 from .ai_min_speech_interval import install_ai_min_speech_interval
 from .ai_request_timeout import install_ai_request_timeout
 from .ai_rules_cleanup import install_ai_rules_cleanup
@@ -58,6 +59,7 @@ from .image_layout_patch import install_image_layout_fix
 from .return_to_login_patch import install_return_to_login
 from .skill_library_feature import install_skill_library_feature
 from .speaking_style_feature import install_speaking_style_feature
+from .speaking_style_import import install_speaking_style_import
 from .sticker_current_session_guard import install_sticker_current_session_guard
 from .sticker_library_feature import install_sticker_library_feature
 from .sticker_metadata_editor import install_sticker_metadata_editor
@@ -84,6 +86,8 @@ install_ai_request_timeout(ui_module, ai_module, image_generation_module)
 # Skill 库统一管理普通聊天能力；说话风格由独立的可编辑风格库管理。
 install_skill_library_feature(ui_module, ai_module)
 install_speaking_style_feature(ui_module, ai_module, skill_library_module)
+# 导入文本/Markdown 风格资料后，由当前模型拆解为九维说话风格并交给用户确认。
+install_speaking_style_import(ui_module, ai_module, speaking_style_module)
 install_folder_access_feature(ui_module, ai_module, skill_library_module)
 # 文件夹权限不再按扩展名限制；同时兼容模型在严格 JSON 外添加无害包装文本。
 install_folder_access_unrestricted_types(
@@ -151,6 +155,8 @@ install_ai_min_speech_interval(
     image_generation_module,
     chat_summary_skill_module,
 )
+# 群禁言是最外层配额守卫：在所有普通回复、图片生成、总结和风格学习之前停止 AI 调用。
+install_ai_group_mute_guard(ui_module, napcat_module, speaking_style_module)
 
 
 def main() -> int:
